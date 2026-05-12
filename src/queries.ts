@@ -1,4 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
+import {
+  normalizeExerciseNameKey,
+} from "./exerciseName";
 import type {
   BodyPartRow,
   BodyWeightSeriesPoint,
@@ -250,18 +253,60 @@ export async function searchExercises(
   db: Database,
   q: string,
 ): Promise<ExerciseRow[]> {
-  const like = `%${q.trim()}%`;
-  return db.select(
+  const t = q.trim();
+  if (!t) return [];
+  const needle = normalizeExerciseNameKey(t);
+  if (!needle) return [];
+  const words = needle.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const rows = await db.select<{ id: number; name: string }[]>(
+    "SELECT id, name FROM exercises",
+  );
+
+  type Scored = { id: number; name: string; score: number };
+  const scored: Scored[] = [];
+  for (const r of rows) {
+    const nk = normalizeExerciseNameKey(r.name);
+    const ok =
+      words.length === 1
+        ? nk.includes(words[0]!)
+        : words.every((w) => nk.includes(w));
+    if (!ok) continue;
+
+    let score = 0;
+    const first = words[0]!;
+    if (nk.startsWith(first)) score += 120;
+    if (nk.startsWith(needle)) score += 200;
+    const phraseAt = nk.indexOf(needle);
+    if (phraseAt >= 0) score += 80 - Math.min(phraseAt, 40);
+    for (const w of words) {
+      const ix = nk.indexOf(w);
+      if (ix >= 0) score += 25 - Math.min(ix, 20) * 0.2;
+    }
+    score -= r.name.length * 0.02;
+    scored.push({ id: r.id, name: r.name, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 100);
+  if (top.length === 0) return [];
+
+  const topIds = top.map((s) => s.id);
+  const ph = topIds.map((_, i) => `$${i + 1}`).join(", ");
+  const orderMap = new Map(topIds.map((id, i) => [id, i]));
+  const full = await db.select<ExerciseRow[]>(
     `SELECT e.id, e.name,
             (SELECT GROUP_CONCAT(bp.name, ' · ')
              FROM exercise_body_parts ebp
              JOIN body_parts bp ON bp.id = ebp.body_part_id
              WHERE ebp.exercise_id = e.id) AS body_groups
      FROM exercises e
-     WHERE e.name LIKE $1
-     ORDER BY e.name
-     LIMIT 100`,
-    [like],
+     WHERE e.id IN (${ph})`,
+    topIds,
+  );
+  return [...full].sort(
+    (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0),
   );
 }
 
@@ -477,6 +522,19 @@ export async function relinkWorkoutExercise(
   );
 }
 
+/** Все блоки, которые ссылались на fromExerciseId, начинают ссылаться на toExerciseId. */
+export async function relinkAllWorkoutExercisesToExercise(
+  db: Database,
+  fromExerciseId: number,
+  toExerciseId: number,
+): Promise<void> {
+  if (fromExerciseId === toExerciseId) return;
+  await db.execute(
+    "UPDATE workout_exercises SET exercise_id = $1 WHERE exercise_id = $2",
+    [toExerciseId, fromExerciseId],
+  );
+}
+
 export async function deleteWorkoutExercise(
   db: Database,
   weId: number,
@@ -669,11 +727,15 @@ export async function getExerciseIdByExactName(
   db: Database,
   name: string,
 ): Promise<number | null> {
-  const rows = await db.select<{ id: number }[]>(
-    "SELECT id FROM exercises WHERE name = $1",
-    [name.trim()],
+  const key = normalizeExerciseNameKey(name.trim());
+  if (!key) return null;
+  const rows = await db.select<{ id: number; name: string }[]>(
+    "SELECT id, name FROM exercises ORDER BY id",
   );
-  return rows[0]?.id ?? null;
+  for (const r of rows) {
+    if (normalizeExerciseNameKey(r.name) === key) return r.id;
+  }
+  return null;
 }
 
 export async function updateExerciseName(

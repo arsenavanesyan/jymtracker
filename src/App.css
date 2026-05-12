@@ -38,6 +38,32 @@ code {
   max-width: 40rem;
 }
 
+.part-diff-hint {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #3d4550;
+  background: #1e2329;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  max-width: 44rem;
+}
+
+.part-diff-hint dl {
+  margin: 0.5rem 0 0;
+}
+
+.part-diff-hint dt {
+  margin-top: 0.35rem;
+  color: #9aa0a6;
+  font-size: 0.82rem;
+}
+
+.part-diff-hint dd {
+  margin: 0.15rem 0 0;
+  color: #e8eaed;
+}
+
 .app {
   min-height: 100vh;
   display: flex;

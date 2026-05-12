@@ -48,6 +48,7 @@ import {
   listWorkouts,
   listWorkoutsBodyWeightSeries,
   mergeExerciseMetadata,
+  relinkAllWorkoutExercisesToExercise,
   relinkWorkoutExercise,
   replaceExerciseMetadata,
   searchExercises,
@@ -1826,6 +1827,12 @@ function EditExerciseMetadataModal({
   const [err, setErr] = useState<string | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  /** Конфликт имён: другая карточка каталога + расхождение групп */
+  const [partConflict, setPartConflict] = useState<{
+    otherId: number;
+    catalogPartIds: number[];
+    formPartIds: number[];
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1856,6 +1863,28 @@ function EditExerciseMetadataModal({
     };
   }, [db, exerciseId, exerciseName]);
 
+  const partDiffLabels = useMemo(() => {
+    if (!partConflict) return null;
+    const c = partConflict.catalogPartIds;
+    const f = partConflict.formPartIds;
+    const cs = new Set(c);
+    const fs = new Set(f);
+    const bothIds = c.filter((id) => fs.has(id));
+    const onlyCatalogIds = c.filter((id) => !fs.has(id));
+    const onlyFormIds = f.filter((id) => !cs.has(id));
+    const label = (ids: number[]) =>
+      [...new Set(ids)]
+        .map((id) => parts.find((p) => p.id === id)?.name)
+        .filter(Boolean)
+        .sort((a, b) => String(a).localeCompare(String(b), "ru"))
+        .join(", ") || "—";
+    return {
+      both: label(bothIds),
+      onlyCatalog: label(onlyCatalogIds),
+      onlyForm: label(onlyFormIds),
+    };
+  }, [partConflict, parts]);
+
   function addMuscleTag(): void {
     const t = muscleInput.trim();
     if (!t) return;
@@ -1867,6 +1896,7 @@ function EditExerciseMetadataModal({
 
   async function submit(): Promise<void> {
     setErr(null);
+    setPartConflict(null);
     const ids = Object.entries(sel)
       .filter(([, v]) => v)
       .map(([k]) => Number(k));
@@ -1896,9 +1926,12 @@ function EditExerciseMetadataModal({
             onClose();
             return;
           }
-          setErr(
-            "В каталоге есть упражнение с таким же названием, но с другим набором групп мышц. Чтобы автоматически связать блок, должны совпасть и название, и отмеченные группы — выровняй группы как у той карточки или измени название.",
-          );
+          const catalogPartIds = await listExerciseBodyPartIds(db, otherId);
+          setPartConflict({
+            otherId,
+            catalogPartIds: [...catalogPartIds],
+            formPartIds: [...ids],
+          });
           return;
         }
         setErr(
@@ -1921,6 +1954,63 @@ function EditExerciseMetadataModal({
       } else {
         setErr(msg);
       }
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function acceptCatalogGroupsAndLinkBlock(): Promise<void> {
+    if (!partConflict || workoutExerciseId == null) return;
+    setSaveBusy(true);
+    setErr(null);
+    try {
+      const catIds = partConflict.catalogPartIds;
+      const sel0: Record<number, boolean> = {};
+      for (const bid of catIds) sel0[bid] = true;
+      setSel(sel0);
+      await relinkWorkoutExercise(db, workoutExerciseId, partConflict.otherId);
+      await mergeExerciseMetadata(db, partConflict.otherId, catIds, muscleTags);
+      await onSaved();
+      setPartConflict(null);
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function applyFormGroupsToCatalogRelinkAll(): Promise<void> {
+    if (!partConflict || workoutExerciseId == null) return;
+    const ids = Object.entries(sel)
+      .filter(([, v]) => v)
+      .map(([k]) => Number(k));
+    if (ids.length === 0) {
+      setErr("Выберите хотя бы одну группу мышц");
+      return;
+    }
+    if (
+      !confirm(
+        "В основной карточке каталога с этим названием будут заменены группы и теги мышц на те, что в форме. Все блоки тренировок, которые ссылались на редактируемую карточку, перейдут на основную. Продолжить?",
+      )
+    ) {
+      return;
+    }
+    setSaveBusy(true);
+    setErr(null);
+    try {
+      await replaceExerciseMetadata(
+        db,
+        partConflict.otherId,
+        ids,
+        muscleTags,
+      );
+      await relinkAllWorkoutExercisesToExercise(db, exerciseId, partConflict.otherId);
+      await onSaved();
+      setPartConflict(null);
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setSaveBusy(false);
     }
@@ -1949,7 +2039,10 @@ function EditExerciseMetadataModal({
                 id="edit-ex-name"
                 type="text"
                 value={editName}
-                onChange={(e) => setEditName(e.target.value)}
+                onChange={(e) => {
+                  setEditName(e.target.value);
+                  setPartConflict(null);
+                }}
                 placeholder="Как в блокноте"
               />
             </div>
@@ -1962,9 +2055,10 @@ function EditExerciseMetadataModal({
                   <input
                     type="checkbox"
                     checked={!!sel[p.id]}
-                    onChange={(e) =>
-                      setSel((s) => ({ ...s, [p.id]: e.target.checked }))
-                    }
+                    onChange={(e) => {
+                      setSel((s) => ({ ...s, [p.id]: e.target.checked }));
+                      setPartConflict(null);
+                    }}
                   />
                   {p.name}
                 </label>
@@ -2043,6 +2137,36 @@ function EditExerciseMetadataModal({
               <p className="error" style={{ marginTop: "0.35rem" }}>
                 {err}
               </p>
+            )}
+            {partConflict && partDiffLabels && (
+              <div className="part-diff-hint" role="status">
+                <strong>Группы мышц не совпали с карточкой в каталоге с тем же названием.</strong>
+                <dl>
+                  <dt>Совпали (есть и там, и в форме)</dt>
+                  <dd>{partDiffLabels.both}</dd>
+                  <dt>Только в каталоге (в форме не отмечено)</dt>
+                  <dd>{partDiffLabels.onlyCatalog}</dd>
+                  <dt>Только в форме (в каталоге нет)</dt>
+                  <dd>{partDiffLabels.onlyForm}</dd>
+                </dl>
+                <div className="toolbar" style={{ marginTop: "0.65rem", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={saveBusy}
+                    onClick={() => void acceptCatalogGroupsAndLinkBlock()}
+                  >
+                    Принять группы из каталога и связать блок
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saveBusy}
+                    onClick={() => void applyFormGroupsToCatalogRelinkAll()}
+                  >
+                    Записать группы из формы в каталог и связать все блоки
+                  </button>
+                </div>
+              </div>
             )}
             <div className="toolbar" style={{ marginTop: "0.75rem" }}>
               <button type="button" onClick={onClose} disabled={saveBusy}>
