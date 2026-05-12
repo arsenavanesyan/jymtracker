@@ -831,6 +831,17 @@ export async function listMeasurementSeries(
   );
 }
 
+/** Все замеры за одну дату (для формы «вручную»). */
+export async function listBodyMeasurementsForDate(
+  db: Database,
+  measuredDate: string,
+): Promise<{ type_id: number; value_cm: number }[]> {
+  return db.select(
+    `SELECT type_id, value_cm FROM body_measurements WHERE measured_date = $1`,
+    [measuredDate],
+  );
+}
+
 export async function upsertBodyMeasurement(
   db: Database,
   measuredDate: string,
@@ -846,6 +857,16 @@ export async function upsertBodyMeasurement(
        note = excluded.note`,
     [measuredDate, typeId, valueCm, note],
   );
+}
+
+/** Удалить все замеры за календарную дату. */
+export async function deleteBodyMeasurementsForDate(
+  db: Database,
+  measuredDate: string,
+): Promise<void> {
+  await db.execute("DELETE FROM body_measurements WHERE measured_date = $1", [
+    measuredDate,
+  ]);
 }
 
 export async function listWorkoutsBodyWeightSeries(

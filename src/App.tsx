@@ -29,6 +29,7 @@ import {
   deleteWorkout,
   deleteWorkoutCardioRow,
   deleteWorkoutExercise,
+  deleteBodyMeasurementsForDate,
   exerciseHistory,
   exerciseMaxWorkingWeightByDate,
   exerciseStatsByBodyPart,
@@ -39,6 +40,7 @@ import {
   listBodyParts,
   listExerciseBodyPartIds,
   listExerciseMuscleTagStrings,
+  listBodyMeasurementsForDate,
   listMeasurementSeries,
   listMeasurementTypes,
   listAllMuscleTags,
@@ -70,10 +72,7 @@ import {
   applyBodyMeasurementsImport,
   parseBodyMeasurementsPaste,
 } from "./bodyMeasurements";
-import {
-  importNotebookSessions,
-  parseNotebook,
-} from "./notebookImport";
+import { importNotebookSessions, parseNotebook } from "./notebookImport";
 import {
   CartesianGrid,
   Legend,
@@ -160,7 +159,8 @@ function CardioRowsPanel({
     <div className="panel">
       <h2>Кардио</h2>
       <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
-        Дистанция — км. Время — ММ:СС, Ч:ММ:СС или только минуты (например 45). Скорость — км/ч.
+        Дистанция — км. Время — ММ:СС, Ч:ММ:СС или только минуты (например 45).
+        Скорость — км/ч.
       </p>
       {rows.map((row) => (
         <CardioExerciseBlock key={row.id} row={row} onReload={onReload} />
@@ -191,7 +191,11 @@ function CardioRowsPanel({
             placeholder="Например: бег, эллипс, вело…"
           />
         </div>
-        <button type="button" className="primary" onClick={() => void addBlock()}>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void addBlock()}
+        >
           Добавить
         </button>
       </div>
@@ -233,7 +237,9 @@ function CardioExerciseBlock({
     setNote(row.notes ?? "");
   }, [row]);
 
-  async function persist(patch: Parameters<typeof updateWorkoutCardioRow>[2]): Promise<void> {
+  async function persist(
+    patch: Parameters<typeof updateWorkoutCardioRow>[2],
+  ): Promise<void> {
     await updateWorkoutCardioRow(db, row.id, patch);
     await onReload();
   }
@@ -246,7 +252,14 @@ function CardioExerciseBlock({
 
   return (
     <div className="exercise-block cardio-block">
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          alignItems: "center",
+        }}
+      >
         <h3 style={{ flex: "1 1 180px", margin: 0 }}>Кардио</h3>
         <button type="button" className="danger" onClick={() => void remove()}>
           Удалить
@@ -260,7 +273,8 @@ function CardioExerciseBlock({
           onChange={(e) => setName(e.target.value)}
           onBlur={() => {
             const t = name.trim();
-            if (t !== row.exercise_name) void persist({ exercise_name: t || "Кардио" });
+            if (t !== row.exercise_name)
+              void persist({ exercise_name: t || "Кардио" });
           }}
         />
       </div>
@@ -359,10 +373,7 @@ function parseBodyWeightInput(raw: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function bodyWeightDirty(
-  workout: WorkoutRow,
-  bodyStr: string,
-): boolean {
+function bodyWeightDirty(workout: WorkoutRow, bodyStr: string): boolean {
   const parsed = parseBodyWeightInput(bodyStr);
   const cur = workout.body_weight_kg;
   if (cur == null && parsed == null) return false;
@@ -399,7 +410,9 @@ function WorkoutMetaPanel({
     workout.body_weight_kg == null ? "" : String(workout.body_weight_kg),
   );
   const [feeling, setFeeling] = useState<string | "">(workout.feeling ?? "");
-  const [intensity, setIntensity] = useState<string | "">(workout.intensity ?? "");
+  const [intensity, setIntensity] = useState<string | "">(
+    workout.intensity ?? "",
+  );
   const [energy, setEnergy] = useState<string | "">(workout.energy ?? "");
   const [isCardio, setIsCardio] = useState(workout.is_cardio === 1);
   const [notes, setNotes] = useState(workout.notes ?? "");
@@ -514,8 +527,7 @@ function WorkoutMetaPanel({
 
   const wrapClass = `${embedded ? "meta-form" : "panel"} workout-meta workout-meta--${isCardio ? "cardio" : "strength"}`;
 
-  const chip = (selected: boolean) =>
-    selected ? "primary" : "ghost";
+  const chip = (selected: boolean) => (selected ? "primary" : "ghost");
 
   return (
     <div className={wrapClass}>
@@ -524,8 +536,12 @@ function WorkoutMetaPanel({
       ) : (
         <h2>Редактирование тренировки</h2>
       )}
-      <p className="muted" style={{ fontSize: "0.86rem", marginTop: embedded ? 0 : "-0.35rem" }}>
-        Дата, время, вес тела, краткий опрос и заметки. Нажми «Сохранить», чтобы записать в базу.
+      <p
+        className="muted"
+        style={{ fontSize: "0.86rem", marginTop: embedded ? 0 : "-0.35rem" }}
+      >
+        Дата, время, вес тела, краткий опрос и заметки. Нажми «Сохранить», чтобы
+        записать в базу.
       </p>
       <div className="field-grid">
         <div className="field">
@@ -631,7 +647,11 @@ function WorkoutMetaPanel({
 
       <div className="field" style={{ marginTop: "0.55rem" }}>
         <span className="survey-label">Тип тренировки</span>
-        <div className="workout-mode-switch" role="group" aria-label="Тип тренировки">
+        <div
+          className="workout-mode-switch"
+          role="group"
+          aria-label="Тип тренировки"
+        >
           <button
             type="button"
             className={chip(!isCardio)}
@@ -647,7 +667,10 @@ function WorkoutMetaPanel({
             Кардио
           </button>
         </div>
-        <p className="muted" style={{ fontSize: "0.82rem", margin: "0.35rem 0 0" }}>
+        <p
+          className="muted"
+          style={{ fontSize: "0.82rem", margin: "0.35rem 0 0" }}
+        >
           {isCardio
             ? "Ниже — кардио-блоки: дистанция, время, скорость, пульс, калории."
             : "Ниже — упражнения с весом и подходами."}
@@ -730,9 +753,7 @@ function App() {
           </button>
         </div>
       </header>
-      {backupOpen && (
-        <BackupDataModal onClose={() => setBackupOpen(false)} />
-      )}
+      {backupOpen && <BackupDataModal onClose={() => setBackupOpen(false)} />}
       <main className="app-main">
         {view.kind === "workouts" && (
           <WorkoutsScreen
@@ -878,7 +899,12 @@ function BackupDataModal({ onClose }: { onClose: () => void }) {
       >
         <h2 id="backup-title">Резервная копия</h2>
         <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
-          Полный дамп базы в JSON (версия 2): части тела, упражнения, связи групп и тегов мышц, все тренировки (даты, вес тела, опрос «как прошло / интенсивность / энергия», кардио-флаг, заметки), кардио-строки (дистанция, время, скорость, пульс, ккал), силовые блоки (НКР), подходы (вес, повторы, разминка), замеры тела. Поддерживается импорт старых файлов версии 1.
+          Полный дамп базы в JSON (версия 2): части тела, упражнения, связи
+          групп и тегов мышц, все тренировки (даты, вес тела, опрос «как прошло
+          / интенсивность / энергия», кардио-флаг, заметки), кардио-строки
+          (дистанция, время, скорость, пульс, ккал), силовые блоки (НКР),
+          подходы (вес, повторы, разминка), замеры тела. Поддерживается импорт
+          старых файлов версии 1.
         </p>
         <input
           ref={fileRef}
@@ -887,7 +913,10 @@ function BackupDataModal({ onClose }: { onClose: () => void }) {
           style={{ display: "none" }}
           onChange={(ev) => void onFileChange(ev)}
         />
-        <div className="toolbar" style={{ flexWrap: "wrap", marginTop: "0.5rem" }}>
+        <div
+          className="toolbar"
+          style={{ flexWrap: "wrap", marginTop: "0.5rem" }}
+        >
           <button
             type="button"
             className="primary"
@@ -908,7 +937,10 @@ function BackupDataModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         {err && (
-          <p className="error" style={{ marginTop: "0.65rem", whiteSpace: "pre-wrap" }}>
+          <p
+            className="error"
+            style={{ marginTop: "0.65rem", whiteSpace: "pre-wrap" }}
+          >
             {err}
           </p>
         )}
@@ -1021,7 +1053,11 @@ function WorkoutsScreen({
             role="dialog"
             aria-modal="true"
             aria-labelledby="notebook-import-title"
-            style={{ maxWidth: "min(640px, 96vw)", maxHeight: "90vh", overflowY: "auto" }}
+            style={{
+              maxWidth: "min(640px, 96vw)",
+              maxHeight: "90vh",
+              overflowY: "auto",
+            }}
           >
             <h2 id="notebook-import-title" style={{ marginTop: 0 }}>
               Импорт из блокнота
@@ -1033,7 +1069,10 @@ function WorkoutsScreen({
               embedded
             />
             <div className="toolbar" style={{ marginTop: "0.75rem" }}>
-              <button type="button" onClick={() => setNotebookImportOpen(false)}>
+              <button
+                type="button"
+                onClick={() => setNotebookImportOpen(false)}
+              >
                 Закрыть
               </button>
             </div>
@@ -1041,10 +1080,19 @@ function WorkoutsScreen({
         </div>
       )}
       <div className="toolbar">
-        <button type="button" className="primary" disabled={busy} onClick={handleNew}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy}
+          onClick={handleNew}
+        >
           Новая тренировка
         </button>
-        <button type="button" disabled={busy} onClick={() => setNotebookImportOpen(true)}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setNotebookImportOpen(true)}
+        >
           Импортировать
         </button>
       </div>
@@ -1083,8 +1131,13 @@ function WorkoutsScreen({
                       {w.is_cardio === 1 ? (
                         (w.cardio_calories_sum ?? 0) > 0 ? (
                           <>
-                            {Math.round(w.cardio_calories_sum ?? 0).toLocaleString("ru-RU")}{" "}
-                            <span className="muted" style={{ fontSize: "0.82rem" }}>
+                            {Math.round(
+                              w.cardio_calories_sum ?? 0,
+                            ).toLocaleString("ru-RU")}{" "}
+                            <span
+                              className="muted"
+                              style={{ fontSize: "0.82rem" }}
+                            >
                               ккал
                             </span>
                           </>
@@ -1093,7 +1146,10 @@ function WorkoutsScreen({
                         )
                       ) : (
                         <>
-                          {Math.round(w.tonnage_kg ?? 0).toLocaleString("ru-RU")} кг
+                          {Math.round(w.tonnage_kg ?? 0).toLocaleString(
+                            "ru-RU",
+                          )}{" "}
+                          кг
                         </>
                       )}
                     </td>
@@ -1439,12 +1495,21 @@ function WorkoutSummaryScreen({
           )}
         </div>
         {surveyLine && (
-          <p className="muted" style={{ fontSize: "0.88rem", margin: "0.35rem 0 0" }}>
+          <p
+            className="muted"
+            style={{ fontSize: "0.88rem", margin: "0.35rem 0 0" }}
+          >
             {surveyLine}
           </p>
         )}
         {w.notes?.trim() && (
-          <p style={{ fontSize: "0.88rem", margin: "0.35rem 0 0", whiteSpace: "pre-wrap" }}>
+          <p
+            style={{
+              fontSize: "0.88rem",
+              margin: "0.35rem 0 0",
+              whiteSpace: "pre-wrap",
+            }}
+          >
             {w.notes}
           </p>
         )}
@@ -1468,15 +1533,28 @@ function WorkoutSummaryScreen({
                 bits.push(`${String(cr.calories).replace(".", ",")} ккал`);
               return (
                 <div key={cr.id} className="w-summary-row">
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "baseline" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "0.35rem",
+                      alignItems: "baseline",
+                    }}
+                  >
                     <strong>{cr.exercise_name}</strong>
                     <span className="wbadge">Кардио</span>
                   </div>
-                  <div className="muted" style={{ fontSize: "0.86rem", marginTop: "0.2rem" }}>
+                  <div
+                    className="muted"
+                    style={{ fontSize: "0.86rem", marginTop: "0.2rem" }}
+                  >
                     {bits.length ? bits.join(" · ") : "—"}
                   </div>
                   {cr.notes?.trim() && (
-                    <div className="muted" style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}>
+                    <div
+                      className="muted"
+                      style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}
+                    >
                       {cr.notes}
                     </div>
                   )}
@@ -1509,10 +1587,22 @@ function WorkoutSummaryScreen({
               : [];
             return (
               <div key={b.id} className="w-summary-row">
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "baseline" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "0.35rem",
+                    alignItems: "baseline",
+                  }}
+                >
                   <strong>{b.exercise_name}</strong>
                   {nkr && <span className="wbadge">НКР</span>}
-                  <button type="button" className="ghost" style={{ fontSize: "0.82rem", padding: "0.2rem 0.5rem" }} onClick={() => onOpenExercise(b.exercise_id)}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    style={{ fontSize: "0.82rem", padding: "0.2rem 0.5rem" }}
+                    onClick={() => onOpenExercise(b.exercise_id)}
+                  >
                     История
                   </button>
                 </div>
@@ -1528,10 +1618,16 @@ function WorkoutSummaryScreen({
                     </span>
                   ))}
                 </div>
-                <div className="muted" style={{ fontSize: "0.86rem", marginTop: "0.2rem" }}>
+                <div
+                  className="muted"
+                  style={{ fontSize: "0.86rem", marginTop: "0.2rem" }}
+                >
                   {line}
                 </div>
-                <div className="vol" style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}>
+                <div
+                  className="vol"
+                  style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}
+                >
                   {Math.round(vol).toLocaleString("ru-RU")} кг
                 </div>
               </div>
@@ -1617,7 +1713,11 @@ function AddExercisePanel({
         <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0 0" }}>
           {hits.map((h) => (
             <li key={h.id} style={{ marginBottom: "0.25rem" }}>
-              <button type="button" className="ghost" onClick={() => void pick(h)}>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void pick(h)}
+              >
                 + {h.name}
                 {h.body_groups && (
                   <span className="muted" style={{ fontSize: "0.82rem" }}>
@@ -1675,7 +1775,9 @@ function CreateExerciseModal({
     const t = muscleInput.trim();
     if (!t) return;
     setMuscleTags((prev) =>
-      prev.some((x) => x.toLowerCase() === t.toLowerCase()) ? prev : [...prev, t],
+      prev.some((x) => x.toLowerCase() === t.toLowerCase())
+        ? prev
+        : [...prev, t],
     );
     setMuscleInput("");
   }
@@ -1727,8 +1829,12 @@ function CreateExerciseModal({
             placeholder="Как в блокноте"
           />
         </div>
-        <p className="muted" style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}>
-          Группы — для фильтра «по части тела». Мышцы — уточнение (например трицепс) для второго фильтра в аналитике.
+        <p
+          className="muted"
+          style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}
+        >
+          Группы — для фильтра «по части тела». Мышцы — уточнение (например
+          трицепс) для второго фильтра в аналитике.
         </p>
         <div className="bp-grid">
           {parts.map((p) => (
@@ -1746,7 +1852,14 @@ function CreateExerciseModal({
         </div>
         <div className="field" style={{ marginTop: "0.65rem" }}>
           <label htmlFor="mtag">Рабочие мышцы (уточнение)</label>
-          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: "0.35rem",
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <input
               id="mtag"
               type="text"
@@ -1771,15 +1884,32 @@ function CreateExerciseModal({
             </button>
           </div>
           {muscleTags.length > 0 && (
-            <div style={{ marginTop: "0.35rem", display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }}>
+            <div
+              style={{
+                marginTop: "0.35rem",
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "0.35rem",
+                alignItems: "center",
+              }}
+            >
               {muscleTags.map((t) => (
-                <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: "0.2rem" }}>
+                <span
+                  key={t}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.2rem",
+                  }}
+                >
                   <span className="wbadge wbadge-muscle">{t}</span>
                   <button
                     type="button"
                     className="ghost"
                     style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
-                    onClick={() => setMuscleTags((prev) => prev.filter((x) => x !== t))}
+                    onClick={() =>
+                      setMuscleTags((prev) => prev.filter((x) => x !== t))
+                    }
                     aria-label={`Удалить ${t}`}
                   >
                     ×
@@ -1789,12 +1919,20 @@ function CreateExerciseModal({
             </div>
           )}
         </div>
-        {err && <p className="error" style={{ marginTop: "0.35rem" }}>{err}</p>}
+        {err && (
+          <p className="error" style={{ marginTop: "0.35rem" }}>
+            {err}
+          </p>
+        )}
         <div className="toolbar" style={{ marginTop: "0.75rem" }}>
           <button type="button" onClick={onClose}>
             Отмена
           </button>
-          <button type="button" className="primary" onClick={() => void submit()}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void submit()}
+          >
             Создать
           </button>
         </div>
@@ -1839,13 +1977,15 @@ function EditExerciseMetadataModal({
     void (async () => {
       setLoading(true);
       try {
-        const [list, bpIds, tags, suggestions, currentName] = await Promise.all([
-          listBodyParts(db),
-          listExerciseBodyPartIds(db, exerciseId),
-          listExerciseMuscleTagStrings(db, exerciseId),
-          listAllMuscleTags(db),
-          getExerciseName(db, exerciseId),
-        ]);
+        const [list, bpIds, tags, suggestions, currentName] = await Promise.all(
+          [
+            listBodyParts(db),
+            listExerciseBodyPartIds(db, exerciseId),
+            listExerciseMuscleTagStrings(db, exerciseId),
+            listAllMuscleTags(db),
+            getExerciseName(db, exerciseId),
+          ],
+        );
         if (cancelled) return;
         setParts(list);
         setEditName((currentName ?? exerciseName).trim());
@@ -1889,7 +2029,9 @@ function EditExerciseMetadataModal({
     const t = muscleInput.trim();
     if (!t) return;
     setMuscleTags((prev) =>
-      prev.some((x) => x.toLowerCase() === t.toLowerCase()) ? prev : [...prev, t],
+      prev.some((x) => x.toLowerCase() === t.toLowerCase())
+        ? prev
+        : [...prev, t],
     );
     setMuscleInput("");
   }
@@ -1912,8 +2054,7 @@ function EditExerciseMetadataModal({
     setSaveBusy(true);
     try {
       const nameInDb = (
-        (await getExerciseName(db, exerciseId)) ??
-        exerciseName
+        (await getExerciseName(db, exerciseId)) ?? exerciseName
       ).trim();
       const otherId = await getExerciseIdByExactName(db, trimmed);
       if (otherId != null && otherId !== exerciseId) {
@@ -1999,13 +2140,12 @@ function EditExerciseMetadataModal({
     setSaveBusy(true);
     setErr(null);
     try {
-      await replaceExerciseMetadata(
+      await replaceExerciseMetadata(db, partConflict.otherId, ids, muscleTags);
+      await relinkAllWorkoutExercisesToExercise(
         db,
+        exerciseId,
         partConflict.otherId,
-        ids,
-        muscleTags,
       );
-      await relinkAllWorkoutExercisesToExercise(db, exerciseId, partConflict.otherId);
       await onSaved();
       setPartConflict(null);
       onClose();
@@ -2027,7 +2167,9 @@ function EditExerciseMetadataModal({
       <div className="modal" role="dialog" aria-modal="true">
         <h2>Упражнение в каталоге</h2>
         <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
-          Название, группы и теги — для карточки в каталоге и всей истории по ней. Автосвязка с уже существующей карточкой с тем же именем срабатывает только если совпадает и набор отмеченных групп мышц.
+          Название, группы и теги — для карточки в каталоге и всей истории по
+          ней. Автосвязка с уже существующей карточкой с тем же именем
+          срабатывает только если совпадает и набор отмеченных групп мышц.
         </p>
         {loading ? (
           <p className="muted">Загрузка…</p>
@@ -2046,8 +2188,12 @@ function EditExerciseMetadataModal({
                 placeholder="Как в блокноте"
               />
             </div>
-            <p className="muted" style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}>
-              Снимите лишние группы или добавьте новые; теги мышц можно полностью заменить.
+            <p
+              className="muted"
+              style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}
+            >
+              Снимите лишние группы или добавьте новые; теги мышц можно
+              полностью заменить.
             </p>
             <div className="bp-grid">
               {parts.map((p) => (
@@ -2120,7 +2266,10 @@ function EditExerciseMetadataModal({
                       <button
                         type="button"
                         className="ghost"
-                        style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
+                        style={{
+                          padding: "0.1rem 0.35rem",
+                          fontSize: "0.75rem",
+                        }}
                         onClick={() =>
                           setMuscleTags((prev) => prev.filter((x) => x !== t))
                         }
@@ -2140,7 +2289,10 @@ function EditExerciseMetadataModal({
             )}
             {partConflict && partDiffLabels && (
               <div className="part-diff-hint" role="status">
-                <strong>Группы мышц не совпали с карточкой в каталоге с тем же названием.</strong>
+                <strong>
+                  Группы мышц не совпали с карточкой в каталоге с тем же
+                  названием.
+                </strong>
                 <dl>
                   <dt>Совпали (есть и там, и в форме)</dt>
                   <dd>{partDiffLabels.both}</dd>
@@ -2149,7 +2301,10 @@ function EditExerciseMetadataModal({
                   <dt>Только в форме (в каталоге нет)</dt>
                   <dd>{partDiffLabels.onlyForm}</dd>
                 </dl>
-                <div className="toolbar" style={{ marginTop: "0.65rem", flexWrap: "wrap" }}>
+                <div
+                  className="toolbar"
+                  style={{ marginTop: "0.65rem", flexWrap: "wrap" }}
+                >
                   <button
                     type="button"
                     className="primary"
@@ -2222,15 +2377,30 @@ function ExerciseBlockEditor({
 
   return (
     <div className="exercise-block">
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          alignItems: "center",
+        }}
+      >
         <h3 style={{ flex: "1 1 200px", margin: 0 }}>{block.exercise_name}</h3>
         <button type="button" className="ghost" onClick={onOpenExercise}>
           История
         </button>
-        <button type="button" className="ghost" onClick={() => setEditMeta(true)}>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => setEditMeta(true)}
+        >
           Группы и мышцы
         </button>
-        <button type="button" className="danger" onClick={() => void removeBlock()}>
+        <button
+          type="button"
+          className="danger"
+          onClick={() => void removeBlock()}
+        >
           Удалить блок
         </button>
       </div>
@@ -2264,7 +2434,9 @@ function ExerciseBlockEditor({
         </div>
       )}
       <div className="ex-meta">
-        <label style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
+        <label
+          style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}
+        >
           <input
             type="checkbox"
             checked={nkr}
@@ -2383,10 +2555,17 @@ function SetRow({
           gap: "0.15rem",
         }}
       >
-        <span className="vol" style={{ fontSize: "0.78rem", whiteSpace: "nowrap" }}>
+        <span
+          className="vol"
+          style={{ fontSize: "0.78rem", whiteSpace: "nowrap" }}
+        >
           {Math.round(vol).toLocaleString("ru-RU")} кг
         </span>
-        <button type="button" className="danger" onClick={() => void onDelete()}>
+        <button
+          type="button"
+          className="danger"
+          onClick={() => void onDelete()}
+        >
           ✕
         </button>
       </div>
@@ -2435,7 +2614,9 @@ function NotebookImportBlock({
     try {
       const { sessions, warnings } = parseNotebook(text, year);
       if (sessions.length === 0) {
-        setReport("Не удалось распознать ни одной тренировки. Проверь формат дат ДД.ММ и строки «…кг …раз».");
+        setReport(
+          "Не удалось распознать ни одной тренировки. Проверь формат дат ДД.ММ и строки «…кг …раз».",
+        );
         return;
       }
       const res = await importNotebookSessions(db, sessions, parts, {
@@ -2447,7 +2628,10 @@ function NotebookImportBlock({
         `Создано новых упражнений: ${res.createdExercises}`,
       ];
       if (res.errors.length) lines.push(`Ошибки: ${res.errors.join("; ")}`);
-      if (warnings.length) lines.push(`Предупреждения: ${warnings.slice(0, 8).join("; ")}${warnings.length > 8 ? "…" : ""}`);
+      if (warnings.length)
+        lines.push(
+          `Предупреждения: ${warnings.slice(0, 8).join("; ")}${warnings.length > 8 ? "…" : ""}`,
+        );
       setReport(lines.join("\n"));
       await onImported();
       setText("");
@@ -2462,8 +2646,8 @@ function NotebookImportBlock({
         Вставь текст как в записной книжке: строки дат <code>22.04</code> или{" "}
         <code>27.04 8:50 - 10:15</code>, названия упражнений, подходы вида{" "}
         <code>40кг 12раз</code> / <code>50кг 8р</code>, строка тоннажа блока{" "}
-        <code>1044кг</code>. НКР — если в названии есть «НКР» или «на каждую руку».
-        Строка <code>Вес 105</code> попадёт в поле веса тела тренировки.
+        <code>1044кг</code>. НКР — если в названии есть «НКР» или «на каждую
+        руку». Строка <code>Вес 105</code> попадёт в поле веса тела тренировки.
       </p>
       <div className="field-grid" style={{ marginBottom: "0.65rem" }}>
         <div className="field">
@@ -2477,7 +2661,14 @@ function NotebookImportBlock({
           />
         </div>
         <div className="field" style={{ justifyContent: "flex-end" }}>
-          <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", marginTop: "1.35rem" }}>
+          <label
+            style={{
+              display: "flex",
+              gap: "0.4rem",
+              alignItems: "center",
+              marginTop: "1.35rem",
+            }}
+          >
             <input
               type="checkbox"
               checked={skipExisting}
@@ -2500,8 +2691,8 @@ function NotebookImportBlock({
       </div>
       {preview && (
         <p className="muted" style={{ fontSize: "0.88rem" }}>
-          Распознано: тренировок {preview.sessions}, упражнений {preview.exercises}, подходов{" "}
-          {preview.sets}.
+          Распознано: тренировок {preview.sessions}, упражнений{" "}
+          {preview.exercises}, подходов {preview.sets}.
         </p>
       )}
       <div className="toolbar">
@@ -2541,7 +2732,14 @@ function NotebookImportBlock({
   );
 }
 
-const CHART_COLORS = ["#8ab4f8", "#81c784", "#ffb74d", "#e57373", "#ba68c8", "#4dd0e1"];
+const CHART_COLORS = [
+  "#8ab4f8",
+  "#81c784",
+  "#ffb74d",
+  "#e57373",
+  "#ba68c8",
+  "#4dd0e1",
+];
 
 function MeasurementsScreen() {
   const db = useDb();
@@ -2550,12 +2748,36 @@ function MeasurementsScreen() {
   const [manualVals, setManualVals] = useState<Record<number, string>>({});
   const [paste, setPaste] = useState("");
   const [pasteYear, setPasteYear] = useState(2026);
+  const [importBlockDate, setImportBlockDate] = useState(() =>
+    localDateString(),
+  );
   const [pasteReport, setPasteReport] = useState<string | null>(null);
   const [chartTypes, setChartTypes] = useState<number[]>([]);
   const [seriesMap, setSeriesMap] = useState<
     Record<number, MeasurementSeriesPoint[]>
   >({});
   const [savingManual, setSavingManual] = useState(false);
+
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const defaultChartAppliedRef = useRef(false);
+
+  const loadManualFieldsFromDb = useCallback(async () => {
+    if (types.length === 0) return;
+    const rows = await listBodyMeasurementsForDate(db, manualDate);
+    const vals: Record<number, string> = {};
+    for (const r of rows) {
+      const v = r.value_cm;
+      vals[r.type_id] =
+        Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-6
+          ? String(Math.round(v))
+          : String(v);
+    }
+    setManualVals(vals);
+  }, [db, manualDate, types]);
+
+  useEffect(() => {
+    void loadManualFieldsFromDb();
+  }, [loadManualFieldsFromDb]);
 
   const loadTypes = useCallback(async () => {
     setTypes(await listMeasurementTypes(db));
@@ -2564,6 +2786,15 @@ function MeasurementsScreen() {
   useEffect(() => {
     void loadTypes();
   }, [loadTypes]);
+
+  useEffect(() => {
+    if (types.length === 0 || defaultChartAppliedRef.current) return;
+    const abdomen = types.find((t) => t.code === "ABDOMEN");
+    if (abdomen) {
+      defaultChartAppliedRef.current = true;
+      setChartTypes([abdomen.id]);
+    }
+  }, [types]);
 
   useEffect(() => {
     if (chartTypes.length === 0) {
@@ -2605,8 +2836,41 @@ function MeasurementsScreen() {
 
   function toggleChartType(id: number): void {
     setChartTypes((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].slice(0, 6),
+      prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id].slice(0, 6),
     );
+  }
+
+  const refreshChartSeries = useCallback(async () => {
+    if (chartTypes.length === 0) return;
+    const next: Record<number, MeasurementSeriesPoint[]> = {};
+    for (const tid of chartTypes) {
+      next[tid] = await listMeasurementSeries(db, tid);
+    }
+    setSeriesMap(next);
+  }, [db, chartTypes]);
+
+  async function persistManualFieldOnBlur(
+    typeId: number,
+    labelRu: string,
+  ): Promise<void> {
+    const raw = manualVals[typeId]?.trim();
+    if (!raw) return;
+    const v = parseFloat(raw.replace(",", "."));
+    if (!Number.isFinite(v)) {
+      setPasteReport(`${labelRu}: некорректное число`);
+      return;
+    }
+    try {
+      await upsertBodyMeasurement(db, manualDate, typeId, v, null);
+      setPasteReport(`${labelRu}: записано в базу`);
+      await refreshChartSeries();
+    } catch (e) {
+      setPasteReport(
+        `${labelRu}: ошибка записи — ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   async function saveManual(): Promise<void> {
@@ -2622,100 +2886,200 @@ function MeasurementsScreen() {
         await upsertBodyMeasurement(db, manualDate, t.id, v, null);
         n++;
       }
-      setPasteReport(n ? `Сохранено полей: ${n}` : "Нет заполненных значений");
-      setManualVals({});
-      const next: Record<number, MeasurementSeriesPoint[]> = { ...seriesMap };
-      for (const tid of chartTypes) {
-        next[tid] = await listMeasurementSeries(db, tid);
+      if (n === 0) {
+        setPasteReport("Нет заполненных значений для записи");
+        return;
       }
-      setSeriesMap(next);
+      setPasteReport(`Сохранено в базу полей: ${n}`);
+      await loadManualFieldsFromDb();
+      await refreshChartSeries();
+    } catch (e) {
+      setPasteReport(
+        `Ошибка записи в базу: ${e instanceof Error ? e.message : String(e)}`,
+      );
     } finally {
       setSavingManual(false);
     }
   }
 
-  async function runPasteImport(): Promise<void> {
-    setPasteReport(null);
-    const parsed = parseBodyMeasurementsPaste(paste, pasteYear, types);
-    if (!parsed.dateISO || parsed.rows.length === 0) {
-      setPasteReport(
-        parsed.errors.join(" ") || "Не удалось разобрать замеры.",
-      );
+  async function deleteMeasurementsForSelectedDate(): Promise<void> {
+    if (
+      !confirm(
+        `Удалить все замеры за ${formatRuDate(manualDate)}? Действие нельзя отменить.`,
+      )
+    ) {
       return;
     }
-    await applyBodyMeasurementsImport(db, parsed.dateISO, parsed.rows);
-    const errExtra = parsed.errors.filter((e) => !e.includes("Лишняя"));
-    setPasteReport(
-      `Сохранено ${parsed.rows.length} замеров на ${formatRuDate(parsed.dateISO)}.${errExtra.length ? ` Замечания: ${errExtra.join("; ")}` : ""}`,
-    );
-    setPaste("");
-    const next: Record<number, MeasurementSeriesPoint[]> = { ...seriesMap };
-    for (const tid of chartTypes) {
-      next[tid] = await listMeasurementSeries(db, tid);
+    try {
+      await deleteBodyMeasurementsForDate(db, manualDate);
+      setPasteReport(`Удалены все замеры за ${formatRuDate(manualDate)}`);
+      await loadManualFieldsFromDb();
+      await refreshChartSeries();
+    } catch (e) {
+      setPasteReport(
+        `Ошибка удаления: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
-    setSeriesMap(next);
+  }
+
+  async function runPasteImport(): Promise<void> {
+    setPasteReport(null);
+    const parsed = parseBodyMeasurementsPaste(
+      paste,
+      pasteYear,
+      types,
+      importBlockDate.trim() || undefined,
+    );
+    if (!parsed.dateISO || parsed.rows.length === 0) {
+      setPasteReport(parsed.errors.join(" ") || "Не удалось разобрать замеры.");
+      return;
+    }
+    try {
+      await applyBodyMeasurementsImport(db, parsed.dateISO, parsed.rows);
+      const errExtra = parsed.errors.filter((e) => !e.includes("Лишняя"));
+      setPasteReport(
+        `Сохранено ${parsed.rows.length} замеров на ${formatRuDate(parsed.dateISO)}.${errExtra.length ? ` Замечания: ${errExtra.join("; ")}` : ""}`,
+      );
+      setPaste("");
+      setImportModalOpen(false);
+      await refreshChartSeries();
+      if (parsed.dateISO === manualDate) {
+        await loadManualFieldsFromDb();
+      }
+    } catch (e) {
+      setPasteReport(
+        `Ошибка импорта: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   return (
     <section>
       <div className="panel">
-        <h2>Объёмы тела (см)</h2>
-        <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
-          Список замеров совпадает с типичным блокнотом (шея, плечевой пояс, грудь…).
-          Дата вставки блока — первая или последняя строка вида <code>21.04</code>.
+        <h2>График</h2>
+        <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>
+          По оси X — даты замеров. До шести линий; по умолчанию включён «Живот»
+          — сними галочку, чтобы убрать линию.
         </p>
-      </div>
-
-      <div className="panel">
-        <h2>Вставить из блокнота</h2>
-        <div className="field-grid">
-          <div className="field">
-            <label htmlFor="py">Год (если дата ДД.ММ)</label>
-            <input
-              id="py"
-              type="number"
-              value={pasteYear}
-              onChange={(e) => setPasteYear(Number(e.target.value) || 2026)}
-            />
+        {chartTypes.length > 0 ? (
+          mergedChartRows.length > 0 ? (
+            <div style={{ width: "100%", height: 320, marginTop: "0.75rem" }}>
+              <ResponsiveContainer>
+                <LineChart data={mergedChartRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "#9aa0a6", fontSize: 10 }}
+                  />
+                  <YAxis tick={{ fill: "#9aa0a6" }} domain={["auto", "auto"]} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#1a1e24",
+                      border: "1px solid #2a2f36",
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: "12px" }} />
+                  {chartTypes.map((tid, idx) => (
+                    <Line
+                      key={tid}
+                      type="monotone"
+                      dataKey={`t${tid}`}
+                      name={
+                        types.find((x) => x.id === tid)?.label_ru ?? String(tid)
+                      }
+                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
+                      dot={{ r: 2 }}
+                      connectNulls
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div
+              className="muted"
+              style={{
+                minHeight: 280,
+                marginTop: "0.75rem",
+                display: "grid",
+                placeItems: "center",
+                border: "1px dashed #2a2f36",
+                borderRadius: 8,
+                padding: "1rem",
+                textAlign: "center",
+              }}
+            >
+              Нет точек для выбранных линий — введи замеры ниже по дате или
+              импортом из блокнота.
+            </div>
+          )
+        ) : (
+          <div
+            className="muted"
+            style={{
+              minHeight: 200,
+              marginTop: "0.75rem",
+              display: "grid",
+              placeItems: "center",
+              border: "1px dashed #2a2f36",
+              borderRadius: 8,
+            }}
+          >
+            Отметь хотя бы один тип замера ниже.
           </div>
-        </div>
-        <div className="field">
-          <label htmlFor="pt">Текст</label>
-          <textarea
-            id="pt"
-            rows={12}
-            value={paste}
-            onChange={(e) => setPaste(e.target.value)}
-            placeholder={"ШЕЯ 48\n\nПЛЕЧЕВОЙ ПОЯС 62\n…\n21.04"}
-            style={{ width: "100%", fontFamily: "inherit" }}
-          />
-        </div>
-        <div className="toolbar">
-          <button type="button" className="primary" onClick={() => void runPasteImport()} disabled={!paste.trim()}>
-            Импортировать замеры
-          </button>
-        </div>
-        {pasteReport && (
-          <p className="muted" style={{ marginTop: "0.65rem", whiteSpace: "pre-wrap" }}>
-            {pasteReport}
-          </p>
         )}
+        <div className="bp-grid" style={{ marginTop: "0.75rem" }}>
+          {types.map((t) => (
+            <label key={t.id} className="bp-item">
+              <input
+                type="checkbox"
+                checked={chartTypes.includes(t.id)}
+                onChange={() => toggleChartType(t.id)}
+              />
+              {t.label_ru}
+            </label>
+          ))}
+        </div>
       </div>
 
       <div className="panel">
         <h2>Вручную по дате</h2>
-        <div className="field" style={{ maxWidth: 220 }}>
-          <label htmlFor="md">Дата замера</label>
-          <input
-            id="md"
-            type="date"
-            value={manualDate}
-            onChange={(e) => setManualDate(e.target.value)}
-          />
+        <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>
+          Цифры сохраняются в базу при уходе из поля (Tab / клик мимо) или
+          кнопкой ниже. Выбери ту же дату после перезапуска — подтянутся уже
+          записанные значения.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "0.75rem",
+            alignItems: "flex-end",
+          }}
+        >
+          <div className="field" style={{ maxWidth: 220 }}>
+            <label htmlFor="md">Дата замера</label>
+            <input
+              id="md"
+              type="date"
+              value={manualDate}
+              onChange={(e) => setManualDate(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className="danger"
+            onClick={() => void deleteMeasurementsForSelectedDate()}
+          >
+            Удалить все замеры за эту дату
+          </button>
         </div>
         <div
           className="field-grid"
-          style={{ marginTop: "0.75rem", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}
+          style={{
+            marginTop: "0.75rem",
+            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+          }}
         >
           {types.map((t) => (
             <div key={t.id} className="field">
@@ -2729,6 +3093,7 @@ function MeasurementsScreen() {
                 onChange={(e) =>
                   setManualVals((s) => ({ ...s, [t.id]: e.target.value }))
                 }
+                onBlur={() => void persistManualFieldOnBlur(t.id, t.label_ru)}
               />
             </div>
           ))}
@@ -2740,63 +3105,121 @@ function MeasurementsScreen() {
             disabled={savingManual}
             onClick={() => void saveManual()}
           >
-            {savingManual ? "Сохранение…" : "Сохранить заполненные"}
+            {savingManual ? "Сохранение…" : "Записать в базу все заполненные"}
           </button>
         </div>
-      </div>
-
-      <div className="panel">
-        <h2>Графики</h2>
-        <p className="muted" style={{ fontSize: "0.86rem" }}>
-          Отметь до 6 линий. По оси X — даты замеров.
-        </p>
-        <div className="bp-grid" style={{ marginTop: "0.5rem" }}>
-          {types.map((t) => (
-            <label key={t.id} className="bp-item">
-              <input
-                type="checkbox"
-                checked={chartTypes.includes(t.id)}
-                onChange={() => toggleChartType(t.id)}
-              />
-              {t.label_ru}
-            </label>
-          ))}
-        </div>
-        {mergedChartRows.length > 0 && chartTypes.length > 0 && (
-          <div style={{ width: "100%", height: 320, marginTop: "1rem" }}>
-            <ResponsiveContainer>
-              <LineChart data={mergedChartRows}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
-                <YAxis tick={{ fill: "#9aa0a6" }} domain={["auto", "auto"]} />
-                <Tooltip
-                  contentStyle={{
-                    background: "#1a1e24",
-                    border: "1px solid #2a2f36",
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: "12px" }} />
-                {chartTypes.map((tid, idx) => (
-                  <Line
-                    key={tid}
-                    type="monotone"
-                    dataKey={`t${tid}`}
-                    name={types.find((x) => x.id === tid)?.label_ru ?? String(tid)}
-                    stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-                    dot={{ r: 2 }}
-                    connectNulls
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-        {chartTypes.length > 0 && mergedChartRows.length === 0 && (
-          <p className="muted" style={{ marginTop: "0.75rem" }}>
-            Нет точек для выбранных замеров.
+        {pasteReport && (
+          <p
+            className="muted"
+            style={{ marginTop: "0.65rem", whiteSpace: "pre-wrap" }}
+          >
+            {pasteReport}
           </p>
         )}
       </div>
+
+      <div className="panel">
+        <h2>Импорт</h2>
+        <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>
+          Вставка блока из блокнота — год и текст в модальном окне.
+        </p>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => {
+            setImportModalOpen(true);
+            setPasteReport(null);
+            setImportBlockDate(manualDate);
+          }}
+        >
+          Импорт из блокнота…
+        </button>
+      </div>
+
+      {importModalOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setImportModalOpen(false);
+          }}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="imp-modal-title"
+            style={{
+              maxWidth: "min(560px, 96vw)",
+              maxHeight: "90vh",
+              overflowY: "auto",
+            }}
+          >
+            <h2 id="imp-modal-title" style={{ marginTop: 0 }}>
+              Импорт из блокнота
+            </h2>
+            <p className="muted" style={{ fontSize: "0.86rem" }}>
+              Год для дат вида ДД.ММ в тексте. Блок: строки «ТИП число», дата в
+              первой или последней строке.
+            </p>
+            <div className="field">
+              <label htmlFor="imp-y">Год (для дат ДД.ММ в тексте)</label>
+              <input
+                id="imp-y"
+                type="number"
+                value={pasteYear}
+                onChange={(e) => setPasteYear(Number(e.target.value) || 2026)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="imp-d">Дата замера</label>
+              <input
+                id="imp-d"
+                type="date"
+                value={importBlockDate}
+                onChange={(e) => setImportBlockDate(e.target.value)}
+              />
+            </div>
+            <p className="muted" style={{ fontSize: "0.82rem", marginTop: 0 }}>
+              Если в тексте есть строка ДД.ММ в начале или конце — она задаёт
+              дату; иначе используется эта дата. Можно всегда задать дату здесь
+              — она перезапишет дату из текста.
+            </p>
+            <div className="field">
+              <label htmlFor="imp-t">Текст</label>
+              <textarea
+                id="imp-t"
+                rows={12}
+                value={paste}
+                onChange={(e) => setPaste(e.target.value)}
+                placeholder={"ШЕЯ 48\n\nПЛЕЧЕВОЙ ПОЯС 62\n…\n21.04"}
+                style={{ width: "100%", fontFamily: "inherit" }}
+              />
+            </div>
+            {pasteReport && (
+              <p
+                className="muted"
+                style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap" }}
+              >
+                {pasteReport}
+              </p>
+            )}
+            <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+              <button type="button" onClick={() => setImportModalOpen(false)}>
+                Закрыть
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={!paste.trim()}
+                onClick={() => void runPasteImport()}
+              >
+                Импортировать
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -2915,7 +3338,10 @@ function AnalyticsScreen({
             <ResponsiveContainer>
               <LineChart data={weightChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#9aa0a6", fontSize: 10 }}
+                />
                 <YAxis
                   tick={{ fill: "#9aa0a6" }}
                   domain={["auto", "auto"]}
@@ -2945,18 +3371,24 @@ function AnalyticsScreen({
       <div className="panel">
         <h2>Тоннаж по датам</h2>
         <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
-          Суммарный тоннаж силовых тренировок по календарным дням (если в день было несколько сессий — складываются). Кардио-сессии дают 0 кг и на графике не показываются.
+          Суммарный тоннаж силовых тренировок по календарным дням (если в день
+          было несколько сессий — складываются). Кардио-сессии дают 0 кг и на
+          графике не показываются.
         </p>
         {tonnageChartData.length === 0 ? (
           <p className="muted" style={{ marginTop: "0.5rem" }}>
-            Пока нет дней с ненулевым тоннажом — добавь подходы в силовых тренировках.
+            Пока нет дней с ненулевым тоннажом — добавь подходы в силовых
+            тренировках.
           </p>
         ) : (
           <div style={{ width: "100%", height: 280, marginTop: "0.75rem" }}>
             <ResponsiveContainer>
               <LineChart data={tonnageChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#9aa0a6", fontSize: 10 }}
+                />
                 <YAxis
                   tick={{ fill: "#9aa0a6" }}
                   domain={["auto", "auto"]}
@@ -2991,7 +3423,11 @@ function AnalyticsScreen({
       <div className="panel">
         <h2>Часть тела и рабочие веса</h2>
         <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
-          Выбери группу и упражнение из списка для этой группы — график по дням: максимальный вес среди рабочих подходов (без разминки). В день с несколькими тренировками берётся один общий максимум на календарную дату.
+          Выбери группу и упражнение из списка для этой группы — график по дням:
+          максимальный вес среди рабочих подходов (без разминки). В день с
+          несколькими тренировками берётся один общий максимум на календарную
+          дату. В таблице ниже: один клик по строке — подставить упражнение в
+          график; двойной клик — открыть историю подходов.
         </p>
         <div className="field" style={{ maxWidth: 320 }}>
           <label htmlFor="bp">Группа</label>
@@ -3042,7 +3478,10 @@ function AnalyticsScreen({
             <ResponsiveContainer>
               <LineChart data={maxWeightChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#9aa0a6", fontSize: 10 }}
+                />
                 <YAxis
                   tick={{ fill: "#9aa0a6" }}
                   domain={["auto", "auto"]}
@@ -3076,7 +3515,8 @@ function AnalyticsScreen({
         )}
         {bpId !== "" && stats.length === 0 && (
           <p className="muted" style={{ marginTop: "0.75rem" }}>
-            Нет тренировок с упражнениями этой группы (проверь группы у упражнений в каталоге).
+            Нет тренировок с упражнениями этой группы (проверь группы у
+            упражнений в каталоге).
           </p>
         )}
         {stats.length > 0 && (
@@ -3091,12 +3531,27 @@ function AnalyticsScreen({
               </thead>
               <tbody>
                 {stats.map((s) => (
-                  <tr key={s.id} className="clickable" onClick={() => onOpenExercise(s.id)}>
+                  <tr
+                    key={s.id}
+                    className="clickable"
+                    title="Один клик — на график, двойной клик — история"
+                    style={
+                      chartExerciseId === s.id
+                        ? {
+                            background: "rgba(129, 201, 149, 0.1)",
+                            boxShadow: "inset 0 0 0 1px rgba(129, 201, 149, 0.35)",
+                          }
+                        : undefined
+                    }
+                    onClick={() => setChartExerciseId(s.id)}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      onOpenExercise(s.id);
+                    }}
+                  >
                     <td>{s.name}</td>
                     <td>{s.session_count}</td>
-                    <td>
-                      {s.last_date ? formatRuDate(s.last_date) : "—"}
-                    </td>
+                    <td>{s.last_date ? formatRuDate(s.last_date) : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -3192,7 +3647,10 @@ function ExerciseHistoryScreen({
                 <div className="hist-date">
                   {formatRuDate(g.date)}
                   {g.nkr && (
-                    <span className="muted" style={{ fontWeight: 400, marginLeft: "0.5rem" }}>
+                    <span
+                      className="muted"
+                      style={{ fontWeight: 400, marginLeft: "0.5rem" }}
+                    >
                       НКР
                     </span>
                   )}

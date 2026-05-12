@@ -49,8 +49,10 @@ export function parseBodyMeasurementsPaste(
   text: string,
   defaultYear: number,
   types: MeasurementTypeRow[],
+  forcedDateISO?: string,
 ): { dateISO: string; rows: ParsedMeasurementRow[]; errors: string[] } {
   const errors: string[] = [];
+  const forced = forcedDateISO?.trim() ?? "";
   const rawLines = text
     .replace(/\r\n/g, "\n")
     .split("\n")
@@ -76,9 +78,12 @@ export function parseBodyMeasurementsPaste(
     const m = last.match(DATE_LINE_RE)!;
     dateISO = toIsoDate(m[1], m[2], defaultYear);
     payload = rawLines.slice(0, -1);
+  } else if (forced) {
+    dateISO = forced;
+    payload = rawLines;
   } else {
     errors.push(
-      "Не найдена дата в формате ДД.ММ (первая или последняя непустая строка).",
+      "Не найдена дата в формате ДД.ММ (первая или последняя непустая строка). Укажи дату в поле «Дата замера» в окне импорта.",
     );
     return { dateISO: "", rows: [], errors };
   }
@@ -107,6 +112,10 @@ export function parseBodyMeasurementsPaste(
       continue;
     }
     rows.push({ typeId, label: labelPart, valueCm: val });
+  }
+
+  if (forced) {
+    dateISO = forced;
   }
 
   return { dateISO, rows, errors };
