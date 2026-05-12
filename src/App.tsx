@@ -1092,13 +1092,6 @@ function WorkoutsScreen({
                       >
                         Изменить
                       </button>{" "}
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => setQuickEdit(w)}
-                      >
-                        Дата…
-                      </button>
                     </td>
                     <td>
                       <button
