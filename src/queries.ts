@@ -3,6 +3,7 @@ import type {
   BodyPartRow,
   BodyWeightSeriesPoint,
   ExerciseHistoryRow,
+  ExerciseMaxWeightDayRow,
   ExerciseRow,
   ExerciseStatRow,
   MeasurementSeriesPoint,
@@ -336,6 +337,26 @@ export async function listExerciseBodyPartIds(
   return rows.map((r) => r.body_part_id);
 }
 
+function sortedBodyPartIdsEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort((x, y) => x - y);
+  const sb = [...b].sort((x, y) => x - y);
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] !== sb[i]) return false;
+  }
+  return true;
+}
+
+/** Совпадает ли выбранный набор групп тела с тем, что у карточки в каталоге. */
+export async function exerciseBodyPartSetMatches(
+  db: Database,
+  exerciseId: number,
+  bodyPartIds: number[],
+): Promise<boolean> {
+  const existing = await listExerciseBodyPartIds(db, exerciseId);
+  return sortedBodyPartIdsEqual(bodyPartIds, existing);
+}
+
 export async function listExerciseMuscleTagStrings(
   db: Database,
   exerciseId: number,
@@ -444,6 +465,18 @@ export async function updateWorkoutExerciseNkr(
   );
 }
 
+/** Переключить блок тренировки на другое упражнение из каталога (подходы сохраняются). */
+export async function relinkWorkoutExercise(
+  db: Database,
+  workoutExerciseId: number,
+  exerciseId: number,
+): Promise<void> {
+  await db.execute(
+    "UPDATE workout_exercises SET exercise_id = $1 WHERE id = $2",
+    [exerciseId, workoutExerciseId],
+  );
+}
+
 export async function deleteWorkoutExercise(
   db: Database,
   weId: number,
@@ -529,6 +562,35 @@ export async function exerciseStatsByBodyPart(
      GROUP BY e.id, e.name
      ORDER BY last_date DESC, e.name`,
     [bodyPartId],
+  );
+}
+
+/**
+ * По каждому календарному дню — максимальный вес среди рабочих подходов (без разминки).
+ * Упражнение должно быть с меткой группы bodyPartId в каталоге (как в фильтре аналитики).
+ */
+export async function exerciseMaxWorkingWeightByDate(
+  db: Database,
+  exerciseId: number,
+  bodyPartId: number,
+): Promise<ExerciseMaxWeightDayRow[]> {
+  return db.select(
+    `SELECT w.workout_date AS workout_date,
+            MAX(ws.weight_kg) AS max_kg
+     FROM workout_sets ws
+     JOIN workout_exercises we ON we.id = ws.workout_exercise_id
+     JOIN workouts w ON w.id = we.workout_id
+     WHERE we.exercise_id = $1
+       AND w.is_cardio = 0
+       AND ws.is_warmup = 0
+       AND ws.weight_kg IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM exercise_body_parts ebp
+         WHERE ebp.exercise_id = $1 AND ebp.body_part_id = $2
+       )
+     GROUP BY w.workout_date
+     ORDER BY w.workout_date ASC`,
+    [exerciseId, bodyPartId],
   );
 }
 

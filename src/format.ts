@@ -53,3 +53,44 @@ export function parseDurationInput(raw: string): number | null {
   }
   return null;
 }
+
+/** «8:50», «08:50», «9:05:30» → секунды от полуночи; невалидно → null */
+export function parseTimeOfDayToSec(raw: string | null | undefined): number | null {
+  if (raw == null) return null;
+  const t = raw.trim();
+  if (!t) return null;
+  const parts = t.split(":").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 3) return null;
+  if (!parts.every((p) => /^\d+$/.test(p))) return null;
+  const h = parseInt(parts[0]!, 10);
+  const m = parseInt(parts[1]!, 10);
+  const s = parts.length === 3 ? parseInt(parts[2]!, 10) : 0;
+  if (![h, m, s].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  if (m >= 60 || s >= 60) return null;
+  if (h > 48) return null;
+  return h * 3600 + m * 60 + s;
+}
+
+/**
+ * Начало/конец тренировки для списка: интервал и длительность (если оба времени разбираются).
+ * При переходе через полночь длительность считается до конца суток + хвост (до 36 ч).
+ */
+export function formatWorkoutSessionTimeLabel(
+  timeStart: string | null | undefined,
+  timeEnd: string | null | undefined,
+): string {
+  const a = timeStart?.trim() ?? "";
+  const b = timeEnd?.trim() ?? "";
+  if (!a && !b) return "—";
+  if (a && !b) return `с ${a}`;
+  if (!a && b) return `до ${b}`;
+  const range = `${a}–${b}`;
+  const sa = parseTimeOfDayToSec(a);
+  const sb = parseTimeOfDayToSec(b);
+  if (sa == null || sb == null) return range;
+  let diff = sb - sa;
+  if (diff < 0) diff += 24 * 3600;
+  if (diff <= 0 || diff > 36 * 3600) return range;
+  const dur = formatDurationSec(diff);
+  return dur ? `${range} · ${dur}` : range;
+}

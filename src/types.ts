@@ -71,6 +71,12 @@ export type ExerciseStatRow = {
   last_date: string | null;
 };
 
+/** Максимальный рабочий вес по дню для графика аналитики */
+export type ExerciseMaxWeightDayRow = {
+  workout_date: string;
+  max_kg: number;
+};
+
 export type ExerciseHistoryRow = {
   workout_date: string;
   workout_id: number;

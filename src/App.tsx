@@ -9,7 +9,14 @@ import {
   type ReactNode,
 } from "react";
 import { useDb } from "./DbContext";
-import { formatKg, formatRuDate, formatDurationSec, localDateString, parseDurationInput } from "./format";
+import {
+  formatKg,
+  formatRuDate,
+  formatDurationSec,
+  formatWorkoutSessionTimeLabel,
+  localDateString,
+  parseDurationInput,
+} from "./format";
 import {
   addSet,
   addWorkoutCardioRow,
@@ -23,8 +30,10 @@ import {
   deleteWorkoutCardioRow,
   deleteWorkoutExercise,
   exerciseHistory,
+  exerciseMaxWorkingWeightByDate,
   exerciseStatsByBodyPart,
-  exerciseStatsByMuscleTag,
+  exerciseBodyPartSetMatches,
+  getExerciseIdByExactName,
   getExerciseName,
   getWorkout,
   listBodyParts,
@@ -32,13 +41,14 @@ import {
   listExerciseMuscleTagStrings,
   listMeasurementSeries,
   listMeasurementTypes,
-  listMuscleTagsInUse,
   listAllMuscleTags,
   listSetsForWorkout,
   listWorkoutCardioRows,
   listWorkoutExercises,
   listWorkouts,
   listWorkoutsBodyWeightSeries,
+  mergeExerciseMetadata,
+  relinkWorkoutExercise,
   replaceExerciseMetadata,
   searchExercises,
   updateSet,
@@ -78,6 +88,7 @@ import type {
   BodyPartRow,
   BodyWeightSeriesPoint,
   ExerciseHistoryRow,
+  ExerciseMaxWeightDayRow,
   ExerciseRow,
   ExerciseStatRow,
   MeasurementSeriesPoint,
@@ -1046,6 +1057,8 @@ function WorkoutsScreen({
               <thead>
                 <tr>
                   <th>Дата</th>
+                  <th>Вес тела</th>
+                  <th>Время</th>
                   <th>Итог</th>
                   <th />
                   <th />
@@ -1059,6 +1072,12 @@ function WorkoutsScreen({
                     onClick={() => onOpenView(w.id)}
                   >
                     <td>{formatRuDate(w.workout_date)}</td>
+                    <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                      {formatKg(w.body_weight_kg)}
+                    </td>
+                    <td style={{ fontSize: "0.9rem", maxWidth: "14rem" }}>
+                      {formatWorkoutSessionTimeLabel(w.time_start, w.time_end)}
+                    </td>
                     <td className="vol">
                       {w.is_cardio === 1 ? (
                         (w.cardio_calories_sum ?? 0) > 0 ? (
@@ -1786,11 +1805,14 @@ function CreateExerciseModal({
 function EditExerciseMetadataModal({
   exerciseId,
   exerciseName,
+  workoutExerciseId,
   onClose,
   onSaved,
 }: {
   exerciseId: number;
   exerciseName: string;
+  /** Строка блока в тренировке — чтобы при конфликте имён привязать блок к уже существующему упражнению */
+  workoutExerciseId?: number;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -1802,6 +1824,7 @@ function EditExerciseMetadataModal({
   const [muscleInput, setMuscleInput] = useState("");
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [saveBusy, setSaveBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1847,7 +1870,8 @@ function EditExerciseMetadataModal({
     const ids = Object.entries(sel)
       .filter(([, v]) => v)
       .map(([k]) => Number(k));
-    if (!editName.trim()) {
+    const trimmed = editName.trim();
+    if (!trimmed) {
       setErr("Введите название");
       return;
     }
@@ -1855,8 +1879,36 @@ function EditExerciseMetadataModal({
       setErr("Выберите хотя бы одну группу мышц");
       return;
     }
+    setSaveBusy(true);
     try {
-      await updateExerciseName(db, exerciseId, editName);
+      const nameInDb = (
+        (await getExerciseName(db, exerciseId)) ??
+        exerciseName
+      ).trim();
+      const otherId = await getExerciseIdByExactName(db, trimmed);
+      if (otherId != null && otherId !== exerciseId) {
+        if (workoutExerciseId != null) {
+          const partsMatch = await exerciseBodyPartSetMatches(db, otherId, ids);
+          if (partsMatch) {
+            await relinkWorkoutExercise(db, workoutExerciseId, otherId);
+            await mergeExerciseMetadata(db, otherId, ids, muscleTags);
+            await onSaved();
+            onClose();
+            return;
+          }
+          setErr(
+            "В каталоге есть упражнение с таким же названием, но с другим набором групп мышц. Чтобы автоматически связать блок, должны совпасть и название, и отмеченные группы — выровняй группы как у той карточки или измени название.",
+          );
+          return;
+        }
+        setErr(
+          "Упражнение с таким названием уже есть в каталоге. Задайте другое имя.",
+        );
+        return;
+      }
+      if (trimmed !== nameInDb) {
+        await updateExerciseName(db, exerciseId, editName);
+      }
       await replaceExerciseMetadata(db, exerciseId, ids, muscleTags);
       await onSaved();
       onClose();
@@ -1869,6 +1921,8 @@ function EditExerciseMetadataModal({
       } else {
         setErr(msg);
       }
+    } finally {
+      setSaveBusy(false);
     }
   }
 
@@ -1883,7 +1937,7 @@ function EditExerciseMetadataModal({
       <div className="modal" role="dialog" aria-modal="true">
         <h2>Упражнение в каталоге</h2>
         <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
-          Название, группы и теги мышц — для всех тренировок, где выбрано это упражнение.
+          Название, группы и теги — для карточки в каталоге и всей истории по ней. Автосвязка с уже существующей карточкой с тем же именем срабатывает только если совпадает и набор отмеченных групп мышц.
         </p>
         {loading ? (
           <p className="muted">Загрузка…</p>
@@ -1991,10 +2045,15 @@ function EditExerciseMetadataModal({
               </p>
             )}
             <div className="toolbar" style={{ marginTop: "0.75rem" }}>
-              <button type="button" onClick={onClose}>
+              <button type="button" onClick={onClose} disabled={saveBusy}>
                 Отмена
               </button>
-              <button type="button" className="primary" onClick={() => void submit()}>
+              <button
+                type="button"
+                className="primary"
+                disabled={saveBusy}
+                onClick={() => void submit()}
+              >
                 Сохранить
               </button>
             </div>
@@ -2055,6 +2114,7 @@ function ExerciseBlockEditor({
         <EditExerciseMetadataModal
           exerciseId={block.exercise_id}
           exerciseName={block.exercise_name}
+          workoutExerciseId={block.id}
           onClose={() => setEditMeta(false)}
           onSaved={onReload}
         />
@@ -2626,17 +2686,15 @@ function AnalyticsScreen({
   const [parts, setParts] = useState<BodyPartRow[]>([]);
   const [bpId, setBpId] = useState<number | "">("");
   const [stats, setStats] = useState<ExerciseStatRow[]>([]);
-  const [muscleTag, setMuscleTag] = useState<string>("");
-  const [muscleOptions, setMuscleOptions] = useState<{ tag: string }[]>([]);
-  const [muscleStats, setMuscleStats] = useState<ExerciseStatRow[]>([]);
+  const [chartExerciseId, setChartExerciseId] = useState<number | "">("");
+  const [maxWeightSeries, setMaxWeightSeries] = useState<
+    ExerciseMaxWeightDayRow[]
+  >([]);
   const [weights, setWeights] = useState<BodyWeightSeriesPoint[]>([]);
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
 
   useEffect(() => {
-    void (async () => {
-      setParts(await listBodyParts(db));
-      setMuscleOptions(await listMuscleTagsInUse(db));
-    })();
+    void listBodyParts(db).then(setParts);
   }, [db]);
 
   useEffect(() => {
@@ -2658,14 +2716,27 @@ function AnalyticsScreen({
   }, [db, bpId]);
 
   useEffect(() => {
-    if (!muscleTag) {
-      setMuscleStats([]);
+    if (bpId === "") {
+      setChartExerciseId("");
       return;
     }
-    void (async () => {
-      setMuscleStats(await exerciseStatsByMuscleTag(db, muscleTag));
-    })();
-  }, [db, muscleTag]);
+    if (
+      chartExerciseId !== "" &&
+      !stats.some((s) => s.id === chartExerciseId)
+    ) {
+      setChartExerciseId("");
+    }
+  }, [bpId, stats, chartExerciseId]);
+
+  useEffect(() => {
+    if (bpId === "" || chartExerciseId === "") {
+      setMaxWeightSeries([]);
+      return;
+    }
+    void exerciseMaxWorkingWeightByDate(db, chartExerciseId, bpId).then(
+      setMaxWeightSeries,
+    );
+  }, [db, bpId, chartExerciseId]);
 
   const weightChartData = useMemo(
     () =>
@@ -2693,6 +2764,16 @@ function AnalyticsScreen({
       .filter((d) => d.tonnage > 0)
       .sort((a, b) => a.iso.localeCompare(b.iso));
   }, [workouts]);
+
+  const maxWeightChartData = useMemo(
+    () =>
+      maxWeightSeries.map((r) => ({
+        iso: r.workout_date,
+        label: formatRuDate(r.workout_date),
+        maxKg: r.max_kg,
+      })),
+    [maxWeightSeries],
+  );
 
   return (
     <section>
@@ -2784,15 +2865,20 @@ function AnalyticsScreen({
       </div>
 
       <div className="panel">
-        <h2>Фильтр по части тела</h2>
+        <h2>Часть тела и рабочие веса</h2>
+        <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
+          Выбери группу и упражнение из списка для этой группы — график по дням: максимальный вес среди рабочих подходов (без разминки). В день с несколькими тренировками берётся один общий максимум на календарную дату.
+        </p>
         <div className="field" style={{ maxWidth: 320 }}>
           <label htmlFor="bp">Группа</label>
           <select
             id="bp"
             value={bpId === "" ? "" : String(bpId)}
-            onChange={(e) =>
-              setBpId(e.target.value === "" ? "" : Number(e.target.value))
-            }
+            onChange={(e) => {
+              const v = e.target.value === "" ? "" : Number(e.target.value);
+              setBpId(v);
+              setChartExerciseId("");
+            }}
           >
             <option value="">Выберите…</option>
             {parts.map((p) => (
@@ -2802,9 +2888,71 @@ function AnalyticsScreen({
             ))}
           </select>
         </div>
+        <div className="field" style={{ maxWidth: 420, marginTop: "0.65rem" }}>
+          <label htmlFor="chart-ex">Упражнение для графика</label>
+          <select
+            id="chart-ex"
+            value={chartExerciseId === "" ? "" : String(chartExerciseId)}
+            disabled={bpId === "" || stats.length === 0}
+            onChange={(e) =>
+              setChartExerciseId(
+                e.target.value === "" ? "" : Number(e.target.value),
+              )
+            }
+          >
+            <option value="">Выберите…</option>
+            {stats.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {chartExerciseId !== "" && maxWeightChartData.length === 0 && (
+          <p className="muted" style={{ marginTop: "0.6rem" }}>
+            Нет рабочих подходов с весом для графика.
+          </p>
+        )}
+        {maxWeightChartData.length > 0 && (
+          <div style={{ width: "100%", height: 280, marginTop: "0.75rem" }}>
+            <ResponsiveContainer>
+              <LineChart data={maxWeightChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
+                <YAxis
+                  tick={{ fill: "#9aa0a6" }}
+                  domain={["auto", "auto"]}
+                  width={52}
+                  tickFormatter={(v) =>
+                    typeof v === "number"
+                      ? v.toLocaleString("ru-RU", {
+                          maximumFractionDigits: 1,
+                        })
+                      : String(v)
+                  }
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#1a1e24",
+                    border: "1px solid #2a2f36",
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="maxKg"
+                  name="Макс. вес, кг"
+                  stroke="#81c995"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
         {bpId !== "" && stats.length === 0 && (
           <p className="muted" style={{ marginTop: "0.75rem" }}>
-            Нет тренировок с упражнениями этой группы (проверь теги у упражнений).
+            Нет тренировок с упражнениями этой группы (проверь группы у упражнений в каталоге).
           </p>
         )}
         {stats.length > 0 && (
@@ -2819,57 +2967,6 @@ function AnalyticsScreen({
               </thead>
               <tbody>
                 {stats.map((s) => (
-                  <tr key={s.id} className="clickable" onClick={() => onOpenExercise(s.id)}>
-                    <td>{s.name}</td>
-                    <td>{s.session_count}</td>
-                    <td>
-                      {s.last_date ? formatRuDate(s.last_date) : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="panel">
-        <h2>Фильтр по мышце (уточнение)</h2>
-        <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>
-          Список только тех мышц/уточнений, которые есть у упражнений в тренировках. Задаётся при создании упражнения.
-        </p>
-        <div className="field" style={{ maxWidth: 360 }}>
-          <label htmlFor="mt">Мышца</label>
-          <select
-            id="mt"
-            value={muscleTag}
-            onChange={(e) => setMuscleTag(e.target.value)}
-          >
-            <option value="">Выберите…</option>
-            {muscleOptions.map((o) => (
-              <option key={o.tag} value={o.tag}>
-                {o.tag}
-              </option>
-            ))}
-          </select>
-        </div>
-        {muscleTag && muscleStats.length === 0 && (
-          <p className="muted" style={{ marginTop: "0.75rem" }}>
-            Нет упражнений с этим тегом в завершённых тренировках.
-          </p>
-        )}
-        {muscleStats.length > 0 && (
-          <div className="table-wrap" style={{ marginTop: "0.75rem" }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Упражнение</th>
-                  <th>Сессий</th>
-                  <th>Последний раз</th>
-                </tr>
-              </thead>
-              <tbody>
-                {muscleStats.map((s) => (
                   <tr key={s.id} className="clickable" onClick={() => onOpenExercise(s.id)}>
                     <td>{s.name}</td>
                     <td>{s.session_count}</td>
