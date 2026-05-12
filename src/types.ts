@@ -5,8 +5,15 @@ export type WorkoutRow = {
   time_end: string | null;
   body_weight_kg: number | null;
   notes: string | null;
+  feeling: string | null;
+  intensity: string | null;
+  energy: string | null;
+  /** 1 = кардио (силовые блоки не используются) */
+  is_cardio: number;
   /** Заполняется в списке тренировок */
   tonnage_kg?: number;
+  /** Сумма ккал по кардио-строкам (список) */
+  cardio_calories_sum?: number | null;
 };
 
 export type BodyPartRow = {
@@ -42,6 +49,19 @@ export type WorkoutSetRow = {
   reps: number;
   is_warmup: number;
   note: string | null;
+};
+
+export type WorkoutCardioRow = {
+  id: number;
+  workout_id: number;
+  sort_order: number;
+  exercise_name: string;
+  distance_km: number | null;
+  duration_sec: number | null;
+  speed_kmh: number | null;
+  pulse_bpm: number | null;
+  calories: number | null;
+  notes: string | null;
 };
 
 export type ExerciseStatRow = {

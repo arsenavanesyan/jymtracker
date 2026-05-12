@@ -23,6 +23,12 @@ pub fn run() {
             sql: include_str!("../migrations/003_exercise_muscle_tags.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "workout_survey_cardio",
+            sql: include_str!("../migrations/004_workout_survey_cardio.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

@@ -40,8 +40,14 @@ function parseNum(s: string): number {
   return parseFloat(s.replace(",", "."));
 }
 
-const SET_RE = /^(\d+[.,]?\d*)\s*кг\s*(\d+)\s*(?:раз|р)\b/i;
-const REPS_ONLY_RE = /^(\d+)\s*(?:раз|р)\s*$/i;
+/**
+ * Подход: вес + повторения. Нельзя использовать \\b после кириллицы (в JS «слово» только ASCII).
+ * «раз» не должен сливаться с «разогрев» — проверяем, что дальше не буква/цифра.
+ * Латинская «p» — частая опечатка вместо «р».
+ */
+const SET_RE =
+  /^(\d+[.,]?\d*)\s*кг\s*(\d+)\s*(?:раз|р|p)(?![а-яёa-z0-9])/i;
+const REPS_ONLY_RE = /^(\d+)\s*(?:раз|р|p)(?![а-яёa-z0-9])\s*$/i;
 const BLOCK_TONNAGE_RE = /^\s*(\d+[.,]?\d*)\s*кг\s*$/;
 const SESSION_TONNAGE_RE = /итог\s*тоннаж/i;
 const DATE_STRICT_RE = /^(\d{1,2})\.(\d{1,2})$/;
@@ -49,16 +55,39 @@ const DATE_PREFIX_RE = /^(\d{1,2})\.(\d{1,2})\s+(.+)$/;
 const DATE_WORD_RE = /дата\s+(\d{1,2})\.(\d{1,2})/i;
 const BODY_WEIGHT_RE = /вес\s+(\d+[.,]?\d*)/i;
 
+/** Только время в шапке («8:50» / «8:50 - 10:15»), не текст блокнота */
+function looksLikeSessionHeaderNote(s: string): boolean {
+  return /^\d{1,2}:\d{2}/.test(s.trim());
+}
+
+/** Хвост после «ДД.ММ » — разбить на строки упражнений/подходов (в т.ч. «название 9кг…» в одной строке). */
+function expandContinuationLines(rest: string): string[] {
+  const cleaned = rest.replace(/\u00a0/g, " ").trim();
+  if (!cleaned) return [];
+  const byNl = cleaned.split("\n").map((x) => x.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const segment of byNl) {
+    const chunks = segment
+      .split(/(?=\d[.,]?\d*\s*кг\s*\d+)/i)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    out.push(...chunks);
+  }
+  return out;
+}
+
 function isExerciseTitleLine(line: string): boolean {
   if (line.length < 2) return false;
-  if (line.includes("кг")) return false;
   if (SESSION_TONNAGE_RE.test(line)) return false;
   if (DATE_STRICT_RE.test(line)) return false;
-  if (DATE_PREFIX_RE.test(line) && !line.includes("кг")) return true; // "27.04 8:50" is date not exercise
+  const dpHdr = line.match(DATE_PREFIX_RE);
+  if (dpHdr && looksLikeSessionHeaderNote(dpHdr[3])) return false;
   if (SET_RE.test(line)) return false;
   if (REPS_ONLY_RE.test(line)) return false;
+  if (BLOCK_TONNAGE_RE.test(line)) return false;
   if (/^[-_]{3,}$/.test(line)) return false;
   if (/^разминка$/i.test(line)) return false;
+  if (/^\d[.,]?\d*\s*кг\s*$/i.test(line) && !SET_RE.test(line)) return false;
   return true;
 }
 
@@ -70,15 +99,22 @@ export function guessBodyPartIds(
   exerciseName: string,
   parts: BodyPartRow[],
 ): number[] {
-  const n = exerciseName.toLowerCase();
+  const full = exerciseName.toLowerCase();
+  const segments = full
+    .split(/\s*\+\s*/)
+    .flatMap((s) => s.split(",").map((t) => t.trim()))
+    .filter(Boolean);
+  const scan = [...new Set([full, ...segments])];
   const names: string[] = [];
-  if (/ног|присед|жим ног|разгибан|сгибан|икр|бедр|голен|толкан|приседан/i.test(n))
-    names.push("Ноги");
-  if (/груд|жим леж|развод рук|пуловер/i.test(n)) names.push("Грудь");
-  if (/спин|тяга|пулловер/i.test(n)) names.push("Спина");
-  if (/плеч|дельт|махи|шраг/i.test(n)) names.push("Плечи");
-  if (/бицеп|трицеп|рук|предплеч/i.test(n)) names.push("Руки");
-  if (/пресс|корпус|подъём ног|вис на брусьях/i.test(n)) names.push("Пресс");
+  for (const n of scan) {
+    if (/ног|присед|жим ног|разгибан|сгибан|икр|бедр|голен|толкан|приседан/i.test(n))
+      names.push("Ноги");
+    if (/груд|жим леж|развод рук|пуловер/i.test(n)) names.push("Грудь");
+    if (/спин|тяга|пулловер/i.test(n)) names.push("Спина");
+    if (/плеч|дельт|махи|шраг/i.test(n)) names.push("Плечи");
+    if (/бицеп|трицеп|рук|предплеч/i.test(n)) names.push("Руки");
+    if (/пресс|корпус|подъём ног|вис на брусьях/i.test(n)) names.push("Пресс");
+  }
   const ids: number[] = [];
   for (const name of names) {
     const p = parts.find((x) => x.name === name);
@@ -96,8 +132,11 @@ export function parseNotebook(
   const warnings: string[] = [];
   const lines = raw
     .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
     .split("\n")
     .map((l) => l.trim());
+
+  const queue = [...lines];
 
   const parsedSessions: ParsedSession[] = [];
   const st = {
@@ -156,8 +195,8 @@ export function parseNotebook(
     st.curEx = null;
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
+  while (queue.length > 0) {
+    let line = queue.shift()!;
     if (!line) continue;
     line = line.replace(/\u00a0/g, " ");
 
@@ -169,17 +208,31 @@ export function parseNotebook(
       continue;
     }
 
-    if (!line.includes("кг")) {
-      const ds = line.match(DATE_STRICT_RE);
-      if (ds) {
-        beginSession(ds[1], ds[2]);
-        continue;
+    const ds = line.match(DATE_STRICT_RE);
+    if (ds) {
+      beginSession(ds[1], ds[2]);
+      continue;
+    }
+
+    const dp = line.match(DATE_PREFIX_RE);
+    if (dp && !SET_RE.test(line)) {
+      const rest = dp[3].replace(/\u00a0/g, " ").trim();
+      const expanded = expandContinuationLines(rest);
+      if (expanded.length === 0) {
+        beginSession(dp[1], dp[2], "");
+      } else if (
+        expanded.length === 1 &&
+        looksLikeSessionHeaderNote(expanded[0]) &&
+        !SET_RE.test(expanded[0])
+      ) {
+        beginSession(dp[1], dp[2], expanded[0]);
+      } else {
+        beginSession(dp[1], dp[2], "");
+        for (let k = expanded.length - 1; k >= 0; k--) {
+          queue.unshift(expanded[k]!);
+        }
       }
-      const dp = line.match(DATE_PREFIX_RE);
-      if (dp && !SET_RE.test(line)) {
-        beginSession(dp[1], dp[2], dp[3]);
-        continue;
-      }
+      continue;
     }
 
     const bw = line.match(BODY_WEIGHT_RE);
@@ -238,6 +291,11 @@ export function parseNotebook(
     }
 
     if (/^разминка$/i.test(line)) {
+      st.current.notes = [st.current.notes, line].filter(Boolean).join("\n");
+      continue;
+    }
+
+    if (/^время\s/i.test(line)) {
       st.current.notes = [st.current.notes, line].filter(Boolean).join("\n");
       continue;
     }

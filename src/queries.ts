@@ -7,6 +7,7 @@ import type {
   ExerciseStatRow,
   MeasurementSeriesPoint,
   MeasurementTypeRow,
+  WorkoutCardioRow,
   WorkoutExerciseRow,
   WorkoutRow,
   WorkoutSetRow,
@@ -15,12 +16,14 @@ import type {
 export async function listWorkouts(db: Database): Promise<WorkoutRow[]> {
   return db.select(
     `SELECT w.id, w.workout_date, w.time_start, w.time_end, w.body_weight_kg, w.notes,
-            COALESCE((
+            w.feeling, w.intensity, w.energy, w.is_cardio,
+            (SELECT COALESCE(SUM(calories), 0) FROM workout_cardio_rows wc WHERE wc.workout_id = w.id) AS cardio_calories_sum,
+            CASE WHEN w.is_cardio = 1 THEN 0 ELSE COALESCE((
               SELECT SUM(COALESCE(ws.weight_kg, 0) * ws.reps * (CASE WHEN we.nkr = 1 THEN 2 ELSE 1 END))
               FROM workout_exercises we
               JOIN workout_sets ws ON ws.workout_exercise_id = we.id
               WHERE we.workout_id = w.id
-            ), 0) AS tonnage_kg
+            ), 0) END AS tonnage_kg
      FROM workouts w
      ORDER BY w.workout_date DESC, w.id DESC`,
   );
@@ -31,7 +34,9 @@ export async function getWorkout(
   id: number,
 ): Promise<WorkoutRow | null> {
   const rows = await db.select<WorkoutRow[]>(
-    "SELECT id, workout_date, time_start, time_end, body_weight_kg, notes FROM workouts WHERE id = $1",
+    `SELECT id, workout_date, time_start, time_end, body_weight_kg, notes,
+            feeling, intensity, energy, is_cardio
+     FROM workouts WHERE id = $1`,
     [id],
   );
   return rows[0] ?? null;
@@ -58,6 +63,10 @@ export async function updateWorkout(
     time_end?: string | null;
     body_weight_kg?: number | null;
     notes?: string | null;
+    feeling?: string | null;
+    intensity?: string | null;
+    energy?: string | null;
+    is_cardio?: number;
   },
 ): Promise<void> {
   const fields: string[] = [];
@@ -83,12 +92,147 @@ export async function updateWorkout(
     fields.push(`notes = $${i++}`);
     values.push(patch.notes);
   }
+  if (patch.feeling !== undefined) {
+    fields.push(`feeling = $${i++}`);
+    values.push(patch.feeling);
+  }
+  if (patch.intensity !== undefined) {
+    fields.push(`intensity = $${i++}`);
+    values.push(patch.intensity);
+  }
+  if (patch.energy !== undefined) {
+    fields.push(`energy = $${i++}`);
+    values.push(patch.energy);
+  }
+  if (patch.is_cardio !== undefined) {
+    fields.push(`is_cardio = $${i++}`);
+    values.push(patch.is_cardio);
+  }
   if (!fields.length) return;
   values.push(id);
   await db.execute(
     `UPDATE workouts SET ${fields.join(", ")} WHERE id = $${i}`,
     values,
   );
+}
+
+/** Удалить все силовые блоки и подходы тренировки */
+export async function clearWorkoutStrengthBlocks(
+  db: Database,
+  workoutId: number,
+): Promise<void> {
+  await db.execute(
+    "DELETE FROM workout_exercises WHERE workout_id = $1",
+    [workoutId],
+  );
+}
+
+export async function clearWorkoutCardioRows(
+  db: Database,
+  workoutId: number,
+): Promise<void> {
+  await db.execute(
+    "DELETE FROM workout_cardio_rows WHERE workout_id = $1",
+    [workoutId],
+  );
+}
+
+export async function listWorkoutCardioRows(
+  db: Database,
+  workoutId: number,
+): Promise<WorkoutCardioRow[]> {
+  return db.select(
+    `SELECT id, workout_id, sort_order, exercise_name, distance_km, duration_sec,
+            speed_kmh, pulse_bpm, calories, notes
+     FROM workout_cardio_rows WHERE workout_id = $1
+     ORDER BY sort_order, id`,
+    [workoutId],
+  );
+}
+
+async function nextCardioSort(
+  db: Database,
+  workoutId: number,
+): Promise<number> {
+  const rows = await db.select<{ m: number | null }[]>(
+    "SELECT MAX(sort_order) AS m FROM workout_cardio_rows WHERE workout_id = $1",
+    [workoutId],
+  );
+  return (rows[0]?.m ?? -1) + 1;
+}
+
+export async function addWorkoutCardioRow(
+  db: Database,
+  workoutId: number,
+  exerciseName: string,
+): Promise<number> {
+  const sort = await nextCardioSort(db, workoutId);
+  const r = await db.execute(
+    `INSERT INTO workout_cardio_rows (workout_id, sort_order, exercise_name)
+     VALUES ($1, $2, $3)`,
+    [workoutId, sort, exerciseName.trim() || "Кардио"],
+  );
+  if (r.lastInsertId == null) throw new Error("lastInsertId missing");
+  return r.lastInsertId;
+}
+
+export async function updateWorkoutCardioRow(
+  db: Database,
+  id: number,
+  patch: {
+    exercise_name?: string;
+    distance_km?: number | null;
+    duration_sec?: number | null;
+    speed_kmh?: number | null;
+    pulse_bpm?: number | null;
+    calories?: number | null;
+    notes?: string | null;
+  },
+): Promise<void> {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  let i = 1;
+  if (patch.exercise_name !== undefined) {
+    fields.push(`exercise_name = $${i++}`);
+    values.push(patch.exercise_name);
+  }
+  if (patch.distance_km !== undefined) {
+    fields.push(`distance_km = $${i++}`);
+    values.push(patch.distance_km);
+  }
+  if (patch.duration_sec !== undefined) {
+    fields.push(`duration_sec = $${i++}`);
+    values.push(patch.duration_sec);
+  }
+  if (patch.speed_kmh !== undefined) {
+    fields.push(`speed_kmh = $${i++}`);
+    values.push(patch.speed_kmh);
+  }
+  if (patch.pulse_bpm !== undefined) {
+    fields.push(`pulse_bpm = $${i++}`);
+    values.push(patch.pulse_bpm);
+  }
+  if (patch.calories !== undefined) {
+    fields.push(`calories = $${i++}`);
+    values.push(patch.calories);
+  }
+  if (patch.notes !== undefined) {
+    fields.push(`notes = $${i++}`);
+    values.push(patch.notes);
+  }
+  if (!fields.length) return;
+  values.push(id);
+  await db.execute(
+    `UPDATE workout_cardio_rows SET ${fields.join(", ")} WHERE id = $${i}`,
+    values,
+  );
+}
+
+export async function deleteWorkoutCardioRow(
+  db: Database,
+  id: number,
+): Promise<void> {
+  await db.execute("DELETE FROM workout_cardio_rows WHERE id = $1", [id]);
 }
 
 export async function deleteWorkout(db: Database, id: number): Promise<void> {
@@ -179,6 +323,44 @@ export async function createExerciseOrMergeByName(
     return existing;
   }
   return createExercise(db, name, bodyPartIds, muscleTags);
+}
+
+export async function listExerciseBodyPartIds(
+  db: Database,
+  exerciseId: number,
+): Promise<number[]> {
+  const rows = await db.select<{ body_part_id: number }[]>(
+    "SELECT body_part_id FROM exercise_body_parts WHERE exercise_id = $1",
+    [exerciseId],
+  );
+  return rows.map((r) => r.body_part_id);
+}
+
+export async function listExerciseMuscleTagStrings(
+  db: Database,
+  exerciseId: number,
+): Promise<string[]> {
+  const rows = await db.select<{ tag: string }[]>(
+    "SELECT tag FROM exercise_muscle_tags WHERE exercise_id = $1 ORDER BY tag COLLATE NOCASE",
+    [exerciseId],
+  );
+  return rows.map((r) => r.tag);
+}
+
+/** Полная замена групп и тегов мышц у упражнения в справочнике. */
+export async function replaceExerciseMetadata(
+  db: Database,
+  exerciseId: number,
+  bodyPartIds: number[],
+  muscleTags: string[] = [],
+): Promise<void> {
+  await db.execute("DELETE FROM exercise_body_parts WHERE exercise_id = $1", [
+    exerciseId,
+  ]);
+  await db.execute("DELETE FROM exercise_muscle_tags WHERE exercise_id = $1", [
+    exerciseId,
+  ]);
+  await mergeExerciseMetadata(db, exerciseId, bodyPartIds, muscleTags);
 }
 
 export async function listWorkoutExercises(
@@ -430,6 +612,25 @@ export async function getExerciseIdByExactName(
     [name.trim()],
   );
   return rows[0]?.id ?? null;
+}
+
+export async function updateExerciseName(
+  db: Database,
+  exerciseId: number,
+  newName: string,
+): Promise<void> {
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error("Пустое название");
+  const other = await getExerciseIdByExactName(db, trimmed);
+  if (other != null && other !== exerciseId) {
+    throw new Error(
+      "Упражнение с таким названием уже есть в каталоге. Задайте другое имя.",
+    );
+  }
+  await db.execute("UPDATE exercises SET name = $1 WHERE id = $2", [
+    trimmed,
+    exerciseId,
+  ]);
 }
 
 export async function findWorkoutIdByDate(

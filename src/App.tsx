@@ -2,18 +2,25 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type ChangeEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import { useDb } from "./DbContext";
-import { formatKg, formatRuDate, localDateString } from "./format";
+import { formatKg, formatRuDate, formatDurationSec, localDateString, parseDurationInput } from "./format";
 import {
   addSet,
+  addWorkoutCardioRow,
   addWorkoutExercise,
+  clearWorkoutCardioRows,
+  clearWorkoutStrengthBlocks,
   createExerciseOrMergeByName,
   createWorkout,
   deleteSet,
   deleteWorkout,
+  deleteWorkoutCardioRow,
   deleteWorkoutExercise,
   exerciseHistory,
   exerciseStatsByBodyPart,
@@ -21,20 +28,33 @@ import {
   getExerciseName,
   getWorkout,
   listBodyParts,
+  listExerciseBodyPartIds,
+  listExerciseMuscleTagStrings,
   listMeasurementSeries,
   listMeasurementTypes,
   listMuscleTagsInUse,
   listAllMuscleTags,
   listSetsForWorkout,
+  listWorkoutCardioRows,
   listWorkoutExercises,
   listWorkouts,
   listWorkoutsBodyWeightSeries,
+  replaceExerciseMetadata,
   searchExercises,
   updateSet,
+  updateExerciseName,
   updateWorkout,
+  updateWorkoutCardioRow,
   updateWorkoutExerciseNkr,
   upsertBodyMeasurement,
 } from "./queries";
+import {
+  downloadJsonBackup,
+  exportFullBackup,
+  importFullBackup,
+  parseFullBackupJson,
+  validateFullBackup,
+} from "./fullBackup";
 import {
   applyBodyMeasurementsImport,
   parseBodyMeasurementsPaste,
@@ -62,6 +82,7 @@ import type {
   ExerciseStatRow,
   MeasurementSeriesPoint,
   MeasurementTypeRow,
+  WorkoutCardioRow,
   WorkoutExerciseRow,
   WorkoutRow,
   WorkoutSetRow,
@@ -90,6 +111,235 @@ function setsForBlock(
   return sets.filter((s) => s.workout_exercise_id === workoutExerciseId);
 }
 
+function parseOptionalFloat(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = parseFloat(t.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseOptionalInt(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = parseInt(t, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function CardioRowsPanel({
+  workoutId,
+  rows,
+  onReload,
+}: {
+  workoutId: number;
+  rows: WorkoutCardioRow[];
+  onReload: () => Promise<void>;
+}) {
+  const db = useDb();
+  const [newName, setNewName] = useState("");
+
+  async function addBlock(): Promise<void> {
+    const title = newName.trim() || "Кардио";
+    await addWorkoutCardioRow(db, workoutId, title);
+    setNewName("");
+    await onReload();
+  }
+
+  return (
+    <div className="panel">
+      <h2>Кардио</h2>
+      <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
+        Дистанция — км. Время — ММ:СС, Ч:ММ:СС или только минуты (например 45). Скорость — км/ч.
+      </p>
+      {rows.map((row) => (
+        <CardioExerciseBlock key={row.id} row={row} onReload={onReload} />
+      ))}
+      <div
+        className="cardio-add-row"
+        style={{
+          marginTop: "0.65rem",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          alignItems: "flex-end",
+        }}
+      >
+        <div className="field" style={{ flex: "1 1 200px", marginBottom: 0 }}>
+          <label htmlFor={`cardio-new-${workoutId}`}>Новое упражнение</label>
+          <input
+            id={`cardio-new-${workoutId}`}
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addBlock();
+              }
+            }}
+            placeholder="Например: бег, эллипс, вело…"
+          />
+        </div>
+        <button type="button" className="primary" onClick={() => void addBlock()}>
+          Добавить
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CardioExerciseBlock({
+  row,
+  onReload,
+}: {
+  row: WorkoutCardioRow;
+  onReload: () => Promise<void>;
+}) {
+  const db = useDb();
+  const [name, setName] = useState(row.exercise_name);
+  const [dist, setDist] = useState(
+    row.distance_km == null ? "" : String(row.distance_km),
+  );
+  const [dur, setDur] = useState(formatDurationSec(row.duration_sec));
+  const [speed, setSpeed] = useState(
+    row.speed_kmh == null ? "" : String(row.speed_kmh),
+  );
+  const [pulse, setPulse] = useState(
+    row.pulse_bpm == null ? "" : String(row.pulse_bpm),
+  );
+  const [cal, setCal] = useState(
+    row.calories == null ? "" : String(row.calories),
+  );
+  const [note, setNote] = useState(row.notes ?? "");
+
+  useEffect(() => {
+    setName(row.exercise_name);
+    setDist(row.distance_km == null ? "" : String(row.distance_km));
+    setDur(formatDurationSec(row.duration_sec));
+    setSpeed(row.speed_kmh == null ? "" : String(row.speed_kmh));
+    setPulse(row.pulse_bpm == null ? "" : String(row.pulse_bpm));
+    setCal(row.calories == null ? "" : String(row.calories));
+    setNote(row.notes ?? "");
+  }, [row]);
+
+  async function persist(patch: Parameters<typeof updateWorkoutCardioRow>[2]): Promise<void> {
+    await updateWorkoutCardioRow(db, row.id, patch);
+    await onReload();
+  }
+
+  async function remove(): Promise<void> {
+    if (!confirm("Удалить эту кардио-запись?")) return;
+    await deleteWorkoutCardioRow(db, row.id);
+    await onReload();
+  }
+
+  return (
+    <div className="exercise-block cardio-block">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+        <h3 style={{ flex: "1 1 180px", margin: 0 }}>Кардио</h3>
+        <button type="button" className="danger" onClick={() => void remove()}>
+          Удалить
+        </button>
+      </div>
+      <div className="field" style={{ marginTop: "0.35rem" }}>
+        <label>Упражнение</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => {
+            const t = name.trim();
+            if (t !== row.exercise_name) void persist({ exercise_name: t || "Кардио" });
+          }}
+        />
+      </div>
+      <div className="cardio-grid" style={{ marginTop: "0.5rem" }}>
+        <div className="field">
+          <label>Дистанция, км</label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={dist}
+            onChange={(e) => setDist(e.target.value)}
+            onBlur={() =>
+              void persist({
+                distance_km: parseOptionalFloat(dist),
+              })
+            }
+          />
+        </div>
+        <div className="field">
+          <label>Время</label>
+          <input
+            type="text"
+            placeholder="30:00 или 45"
+            value={dur}
+            onChange={(e) => setDur(e.target.value)}
+            onBlur={() => {
+              const sec = parseDurationInput(dur);
+              void persist({ duration_sec: sec });
+            }}
+          />
+        </div>
+        <div className="field">
+          <label>Скорость, км/ч</label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={speed}
+            onChange={(e) => setSpeed(e.target.value)}
+            onBlur={() =>
+              void persist({
+                speed_kmh: parseOptionalFloat(speed),
+              })
+            }
+          />
+        </div>
+        <div className="field">
+          <label>Пульс</label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={pulse}
+            onChange={(e) => setPulse(e.target.value)}
+            onBlur={() =>
+              void persist({
+                pulse_bpm: parseOptionalInt(pulse),
+              })
+            }
+          />
+        </div>
+        <div className="field">
+          <label>Калории, ккал</label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={cal}
+            onChange={(e) => setCal(e.target.value)}
+            onBlur={() =>
+              void persist({
+                calories: parseOptionalFloat(cal),
+              })
+            }
+          />
+        </div>
+        <div className="field" style={{ gridColumn: "1 / -1" }}>
+          <label>Заметка</label>
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onBlur={() => {
+              const t = note.trim();
+              const v = t || null;
+              if (v !== (row.notes ?? null)) void persist({ notes: v });
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function parseBodyWeightInput(raw: string): number | null {
   const t = raw.trim();
   if (!t) return null;
@@ -113,11 +363,21 @@ function WorkoutMetaPanel({
   workoutId,
   onSaved,
   embedded = false,
+  extraFormActions,
+  strengthBlockCount = 0,
+  cardioRowCount = 0,
+  onCardioDraftChange,
 }: {
   workout: WorkoutRow;
   workoutId: number;
   onSaved: () => void | Promise<void>;
   embedded?: boolean;
+  extraFormActions?: ReactNode;
+  /** Для предупреждения при смене «Кардио» */
+  strengthBlockCount?: number;
+  cardioRowCount?: number;
+  /** Сообщить родителю выбранный режим (в т.ч. до «Сохранить») — для переключения списка упражнений */
+  onCardioDraftChange?: (cardio: boolean) => void;
 }) {
   const db = useDb();
   const [date, setDate] = useState(workout.workout_date);
@@ -126,6 +386,10 @@ function WorkoutMetaPanel({
   const [bodyStr, setBodyStr] = useState(
     workout.body_weight_kg == null ? "" : String(workout.body_weight_kg),
   );
+  const [feeling, setFeeling] = useState<string | "">(workout.feeling ?? "");
+  const [intensity, setIntensity] = useState<string | "">(workout.intensity ?? "");
+  const [energy, setEnergy] = useState<string | "">(workout.energy ?? "");
+  const [isCardio, setIsCardio] = useState(workout.is_cardio === 1);
   const [notes, setNotes] = useState(workout.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -137,9 +401,27 @@ function WorkoutMetaPanel({
     setBodyStr(
       workout.body_weight_kg == null ? "" : String(workout.body_weight_kg),
     );
+    setFeeling(workout.feeling ?? "");
+    setIntensity(workout.intensity ?? "");
+    setEnergy(workout.energy ?? "");
+    setIsCardio(workout.is_cardio === 1);
     setNotes(workout.notes ?? "");
-    // Только смена тренировки: после load() из подходов тот же id — не сбрасываем черновик «Общее».
-  }, [workout.id]);
+  }, [
+    workout.id,
+    workout.workout_date,
+    workout.time_start,
+    workout.time_end,
+    workout.body_weight_kg,
+    workout.feeling,
+    workout.intensity,
+    workout.energy,
+    workout.is_cardio,
+    workout.notes,
+  ]);
+
+  useEffect(() => {
+    onCardioDraftChange?.(isCardio);
+  }, [isCardio, onCardioDraftChange]);
 
   const dirty = useMemo(() => {
     if (date !== workout.workout_date) return true;
@@ -147,10 +429,48 @@ function WorkoutMetaPanel({
     if (timeEnd.trim() !== (workout.time_end ?? "").trim()) return true;
     if (notes.trim() !== (workout.notes ?? "").trim()) return true;
     if (bodyWeightDirty(workout, bodyStr)) return true;
+    if ((feeling || null) !== (workout.feeling ?? null)) return true;
+    if ((intensity || null) !== (workout.intensity ?? null)) return true;
+    if ((energy || null) !== (workout.energy ?? null)) return true;
+    if (isCardio !== (workout.is_cardio === 1)) return true;
     return false;
-  }, [workout, date, timeStart, timeEnd, notes, bodyStr]);
+  }, [
+    workout,
+    date,
+    timeStart,
+    timeEnd,
+    notes,
+    bodyStr,
+    feeling,
+    intensity,
+    energy,
+    isCardio,
+  ]);
 
   async function save(): Promise<void> {
+    const nextCardio = isCardio ? 1 : 0;
+    const prevCardio = workout.is_cardio === 1 ? 1 : 0;
+    if (nextCardio !== prevCardio) {
+      if (nextCardio === 1 && strengthBlockCount > 0) {
+        if (
+          !confirm(
+            "Силовые упражнения этой тренировки будут удалены. Переключить на кардио?",
+          )
+        ) {
+          return;
+        }
+      }
+      if (nextCardio === 0 && cardioRowCount > 0) {
+        if (
+          !confirm(
+            "Кардио-блоки этой тренировки будут удалены. Переключить на силовую?",
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
     setSaving(true);
     try {
       const n = parseBodyWeightInput(bodyStr);
@@ -160,7 +480,18 @@ function WorkoutMetaPanel({
         time_end: timeEnd.trim() || null,
         body_weight_kg: n,
         notes: notes.trim() || null,
+        feeling: feeling || null,
+        intensity: intensity || null,
+        energy: energy || null,
+        is_cardio: nextCardio,
       });
+      if (nextCardio !== prevCardio) {
+        if (nextCardio === 1) {
+          await clearWorkoutStrengthBlocks(db, workoutId);
+        } else {
+          await clearWorkoutCardioRows(db, workoutId);
+        }
+      }
       await onSaved();
       setSavedFlash(true);
       window.setTimeout(() => setSavedFlash(false), 1600);
@@ -169,7 +500,10 @@ function WorkoutMetaPanel({
     }
   }
 
-  const wrapClass = embedded ? "meta-form" : "panel";
+  const wrapClass = `${embedded ? "meta-form" : "panel"} workout-meta workout-meta--${isCardio ? "cardio" : "strength"}`;
+
+  const chip = (selected: boolean) =>
+    selected ? "primary" : "ghost";
 
   return (
     <div className={wrapClass}>
@@ -179,7 +513,7 @@ function WorkoutMetaPanel({
         <h2>Редактирование тренировки</h2>
       )}
       <p className="muted" style={{ fontSize: "0.86rem", marginTop: embedded ? 0 : "-0.35rem" }}>
-        Дата, время, вес тела и заметки. Нажми «Сохранить», чтобы записать в базу.
+        Дата, время, вес тела, краткий опрос и заметки. Нажми «Сохранить», чтобы записать в базу.
       </p>
       <div className="field-grid">
         <div className="field">
@@ -223,6 +557,91 @@ function WorkoutMetaPanel({
           />
         </div>
       </div>
+
+      <div className="field" style={{ marginTop: "0.65rem" }}>
+        <label className="survey-label">Как прошло?</label>
+        <div className="chip-row">
+          {[
+            { v: "poor", l: "Плохо" },
+            { v: "ok", l: "Норм" },
+            { v: "good", l: "Хорошо" },
+            { v: "great", l: "Отлично" },
+          ].map(({ v, l }) => (
+            <button
+              key={v}
+              type="button"
+              className={chip(feeling === v)}
+              onClick={() => setFeeling(feeling === v ? "" : v)}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field" style={{ marginTop: "0.45rem" }}>
+        <label className="survey-label">Интенсивность</label>
+        <div className="chip-row">
+          {[
+            { v: "slow", l: "Медленная" },
+            { v: "medium", l: "Средняя" },
+            { v: "fast", l: "Быстрая" },
+          ].map(({ v, l }) => (
+            <button
+              key={v}
+              type="button"
+              className={chip(intensity === v)}
+              onClick={() => setIntensity(intensity === v ? "" : v)}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field" style={{ marginTop: "0.45rem" }}>
+        <label className="survey-label">Энергия</label>
+        <div className="chip-row">
+          {[
+            { v: "low", l: "Низкая" },
+            { v: "mid", l: "Средняя" },
+            { v: "high", l: "Высокая" },
+          ].map(({ v, l }) => (
+            <button
+              key={v}
+              type="button"
+              className={chip(energy === v)}
+              onClick={() => setEnergy(energy === v ? "" : v)}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="field" style={{ marginTop: "0.55rem" }}>
+        <span className="survey-label">Тип тренировки</span>
+        <div className="workout-mode-switch" role="group" aria-label="Тип тренировки">
+          <button
+            type="button"
+            className={chip(!isCardio)}
+            onClick={() => setIsCardio(false)}
+          >
+            Силовая
+          </button>
+          <button
+            type="button"
+            className={chip(isCardio)}
+            onClick={() => setIsCardio(true)}
+          >
+            Кардио
+          </button>
+        </div>
+        <p className="muted" style={{ fontSize: "0.82rem", margin: "0.35rem 0 0" }}>
+          {isCardio
+            ? "Ниже — кардио-блоки: дистанция, время, скорость, пульс, калории."
+            : "Ниже — упражнения с весом и подходами."}
+        </p>
+      </div>
+
       <div className="field">
         <label htmlFor={embedded ? "wm-notes-e" : "wm-notes"}>Заметки</label>
         <textarea
@@ -242,6 +661,7 @@ function WorkoutMetaPanel({
         >
           {saving ? "Сохранение…" : "Сохранить"}
         </button>
+        {!isCardio && extraFormActions}
         {dirty && !savedFlash && (
           <span className="muted" style={{ fontSize: "0.86rem" }}>
             Есть несохранённые изменения
@@ -259,6 +679,7 @@ function WorkoutMetaPanel({
 
 function App() {
   const [view, setView] = useState<View>({ kind: "workouts" });
+  const [backupOpen, setBackupOpen] = useState(false);
 
   return (
     <div className="app">
@@ -287,7 +708,19 @@ function App() {
             Объёмы
           </button>
         </nav>
+        <div style={{ marginLeft: "auto" }}>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setBackupOpen(true)}
+          >
+            Резервная копия
+          </button>
+        </div>
       </header>
+      {backupOpen && (
+        <BackupDataModal onClose={() => setBackupOpen(false)} />
+      )}
       <main className="app-main">
         {view.kind === "workouts" && (
           <WorkoutsScreen
@@ -365,6 +798,113 @@ function App() {
   );
 }
 
+function BackupDataModal({ onClose }: { onClose: () => void }) {
+  const db = useDb();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function handleDownload(): Promise<void> {
+    setErr(null);
+    setBusy(true);
+    try {
+      const payload = await exportFullBackup(db);
+      downloadJsonBackup(payload);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onFileChange(e: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      const text = await f.text();
+      let parsed: unknown;
+      try {
+        parsed = parseFullBackupJson(text);
+      } catch {
+        setErr("Файл не является корректным JSON.");
+        return;
+      }
+      const data = validateFullBackup(parsed);
+      if (
+        !confirm(
+          "Импорт заменит все данные в приложении содержимым файла (тренировки, упражнения, замеры тела и т.д.). Текущее состояние будет удалено. Продолжить?",
+        )
+      ) {
+        return;
+      }
+      await importFullBackup(db, data);
+      window.location.reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(ev) => {
+        if (ev.target === ev.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="backup-title"
+        style={{ maxWidth: "min(520px, 96vw)" }}
+      >
+        <h2 id="backup-title">Резервная копия</h2>
+        <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
+          Полный дамп базы в JSON (версия 2): части тела, упражнения, связи групп и тегов мышц, все тренировки (даты, вес тела, опрос «как прошло / интенсивность / энергия», кардио-флаг, заметки), кардио-строки (дистанция, время, скорость, пульс, ккал), силовые блоки (НКР), подходы (вес, повторы, разминка), замеры тела. Поддерживается импорт старых файлов версии 1.
+        </p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: "none" }}
+          onChange={(ev) => void onFileChange(ev)}
+        />
+        <div className="toolbar" style={{ flexWrap: "wrap", marginTop: "0.5rem" }}>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void handleDownload()}
+          >
+            {busy ? "Подождите…" : "Скачать JSON"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => fileRef.current?.click()}
+          >
+            Импорт из файла…
+          </button>
+          <button type="button" onClick={onClose} disabled={busy}>
+            Закрыть
+          </button>
+        </div>
+        {err && (
+          <p className="error" style={{ marginTop: "0.65rem", whiteSpace: "pre-wrap" }}>
+            {err}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkoutsScreen({
   onOpenView,
   onOpenEdit,
@@ -377,10 +917,26 @@ function WorkoutsScreen({
   const [busy, setBusy] = useState(false);
   const [quickEdit, setQuickEdit] = useState<WorkoutRow | null>(null);
   const [notebookImportOpen, setNotebookImportOpen] = useState(false);
+  const [quickMeta, setQuickMeta] = useState({ s: 0, c: 0 });
 
   const load = useCallback(async () => {
     setRows(await listWorkouts(db));
   }, [db]);
+
+  useEffect(() => {
+    if (!quickEdit) return;
+    let cancelled = false;
+    void (async () => {
+      const [ex, cr] = await Promise.all([
+        listWorkoutExercises(db, quickEdit.id),
+        listWorkoutCardioRows(db, quickEdit.id),
+      ]);
+      if (!cancelled) setQuickMeta({ s: ex.length, c: cr.length });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [quickEdit, db]);
 
   useEffect(() => {
     void load();
@@ -425,6 +981,8 @@ function WorkoutsScreen({
               embedded
               workout={quickEdit}
               workoutId={quickEdit.id}
+              strengthBlockCount={quickMeta.s}
+              cardioRowCount={quickMeta.c}
               onSaved={async () => {
                 await load();
                 setQuickEdit(null);
@@ -488,7 +1046,7 @@ function WorkoutsScreen({
               <thead>
                 <tr>
                   <th>Дата</th>
-                  <th>Тоннаж</th>
+                  <th>Итог</th>
                   <th />
                   <th />
                 </tr>
@@ -502,7 +1060,22 @@ function WorkoutsScreen({
                   >
                     <td>{formatRuDate(w.workout_date)}</td>
                     <td className="vol">
-                      {Math.round(w.tonnage_kg ?? 0).toLocaleString("ru-RU")} кг
+                      {w.is_cardio === 1 ? (
+                        (w.cardio_calories_sum ?? 0) > 0 ? (
+                          <>
+                            {Math.round(w.cardio_calories_sum ?? 0).toLocaleString("ru-RU")}{" "}
+                            <span className="muted" style={{ fontSize: "0.82rem" }}>
+                              ккал
+                            </span>
+                          </>
+                        ) : (
+                          <span className="muted">—</span>
+                        )
+                      ) : (
+                        <>
+                          {Math.round(w.tonnage_kg ?? 0).toLocaleString("ru-RU")} кг
+                        </>
+                      )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <button
@@ -560,18 +1133,31 @@ function WorkoutDetailScreen({
   const [w, setW] = useState<WorkoutRow | null>(null);
   const [blocks, setBlocks] = useState<WorkoutExerciseRow[]>([]);
   const [sets, setSets] = useState<WorkoutSetRow[]>([]);
+  const [cardioRows, setCardioRows] = useState<WorkoutCardioRow[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [newExerciseModal, setNewExerciseModal] = useState(false);
+  const [layoutCardio, setLayoutCardio] = useState(false);
+
+  useEffect(() => {
+    if (w) setLayoutCardio(w.is_cardio === 1);
+  }, [w?.id, w?.is_cardio]);
+
+  useEffect(() => {
+    if (layoutCardio) setNewExerciseModal(false);
+  }, [layoutCardio]);
 
   const load = useCallback(async () => {
     try {
-      const [wo, ex, st] = await Promise.all([
+      const [wo, ex, st, cr] = await Promise.all([
         getWorkout(db, id),
         listWorkoutExercises(db, id),
         listSetsForWorkout(db, id),
+        listWorkoutCardioRows(db, id),
       ]);
       setW(wo);
       setBlocks(ex);
       setSets(st);
+      setCardioRows(cr);
     } finally {
       setLoaded(true);
     }
@@ -591,6 +1177,11 @@ function WorkoutDetailScreen({
       return acc + sumVolumes(ss, b.nkr === 1);
     }, 0);
   }, [blocks, sets]);
+
+  const cardioCaloriesSum = useMemo(
+    () => cardioRows.reduce((a, r) => a + (r.calories ?? 0), 0),
+    [cardioRows],
+  );
 
   async function handleDeleteWorkout() {
     if (!confirm("Удалить тренировку целиком?")) return;
@@ -629,31 +1220,94 @@ function WorkoutDetailScreen({
           Удалить тренировку
         </button>
         <span className="muted" style={{ marginLeft: "auto" }}>
-          Тоннаж сессии:{" "}
-          <strong className="vol">
-            {Math.round(sessionTonnage).toLocaleString("ru-RU")} кг
-          </strong>
+          {layoutCardio ? (
+            <>
+              Сумма ккал:{" "}
+              <strong className="vol">
+                {Math.round(cardioCaloriesSum).toLocaleString("ru-RU")}
+              </strong>
+            </>
+          ) : (
+            <>
+              Тоннаж сессии:{" "}
+              <strong className="vol">
+                {Math.round(sessionTonnage).toLocaleString("ru-RU")} кг
+              </strong>
+            </>
+          )}
         </span>
       </div>
 
-      <WorkoutMetaPanel workout={w} workoutId={id} onSaved={load} />
-
-      <AddExercisePanel
+      <WorkoutMetaPanel
+        workout={w}
         workoutId={id}
-        onAdded={load}
+        onSaved={load}
+        strengthBlockCount={blocks.length}
+        cardioRowCount={cardioRows.length}
+        onCardioDraftChange={setLayoutCardio}
+        extraFormActions={
+          <button type="button" onClick={() => setNewExerciseModal(true)}>
+            Новое упражнение
+          </button>
+        }
       />
 
-      {blocks.map((b) => (
-        <ExerciseBlockEditor
-          key={b.id}
-          block={b}
-          sets={setsForBlock(sets, b.id)}
-          onReload={load}
-          onOpenExercise={() => onOpenExercise(b.exercise_id)}
-        />
-      ))}
+      {layoutCardio ? (
+        <CardioRowsPanel workoutId={id} rows={cardioRows} onReload={load} />
+      ) : (
+        <>
+          <AddExercisePanel
+            workoutId={id}
+            onAdded={load}
+            newExerciseOpen={newExerciseModal}
+            onCloseNewExercise={() => setNewExerciseModal(false)}
+          />
+
+          {blocks.map((b) => (
+            <ExerciseBlockEditor
+              key={b.id}
+              block={b}
+              sets={setsForBlock(sets, b.id)}
+              onReload={load}
+              onOpenExercise={() => onOpenExercise(b.exercise_id)}
+            />
+          ))}
+        </>
+      )}
     </section>
   );
+}
+
+const SURVEY_FEEL: Record<string, string> = {
+  poor: "Плохо",
+  ok: "Норм",
+  good: "Хорошо",
+  great: "Отлично",
+};
+const SURVEY_INT: Record<string, string> = {
+  slow: "Медленная",
+  medium: "Средняя",
+  fast: "Быстрая",
+};
+const SURVEY_EN: Record<string, string> = {
+  low: "Низкая",
+  mid: "Средняя",
+  high: "Высокая",
+};
+
+function formatWorkoutSurveyLine(w: WorkoutRow): string | null {
+  const bits: string[] = [];
+  if (w.feeling && SURVEY_FEEL[w.feeling]) {
+    bits.push(`Как прошло: ${SURVEY_FEEL[w.feeling]}`);
+  }
+  if (w.intensity && SURVEY_INT[w.intensity]) {
+    bits.push(`Интенсивность: ${SURVEY_INT[w.intensity]}`);
+  }
+  if (w.energy && SURVEY_EN[w.energy]) {
+    bits.push(`Энергия: ${SURVEY_EN[w.energy]}`);
+  }
+  if (w.is_cardio === 1) bits.push("Кардио");
+  return bits.length ? bits.join(" · ") : null;
 }
 
 function WorkoutSummaryScreen({
@@ -671,18 +1325,21 @@ function WorkoutSummaryScreen({
   const [w, setW] = useState<WorkoutRow | null>(null);
   const [blocks, setBlocks] = useState<WorkoutExerciseRow[]>([]);
   const [sets, setSets] = useState<WorkoutSetRow[]>([]);
+  const [cardioRows, setCardioRows] = useState<WorkoutCardioRow[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [wo, ex, st] = await Promise.all([
+      const [wo, ex, st, cr] = await Promise.all([
         getWorkout(db, id),
         listWorkoutExercises(db, id),
         listSetsForWorkout(db, id),
+        listWorkoutCardioRows(db, id),
       ]);
       setW(wo);
       setBlocks(ex);
       setSets(st);
+      setCardioRows(cr);
     } finally {
       setLoaded(true);
     }
@@ -702,6 +1359,11 @@ function WorkoutSummaryScreen({
       return acc + sumVolumes(ss, b.nkr === 1);
     }, 0);
   }, [blocks, sets]);
+
+  const cardioCaloriesSum = useMemo(
+    () => cardioRows.reduce((a, r) => a + (r.calories ?? 0), 0),
+    [cardioRows],
+  );
 
   if (!loaded) {
     return (
@@ -724,6 +1386,8 @@ function WorkoutSummaryScreen({
     );
   }
 
+  const surveyLine = formatWorkoutSurveyLine(w);
+
   return (
     <section className="workout-summary">
       <div className="toolbar">
@@ -734,10 +1398,21 @@ function WorkoutSummaryScreen({
           Редактировать тренировку
         </button>
         <span className="muted" style={{ marginLeft: "auto" }}>
-          Тоннаж:{" "}
-          <strong className="vol">
-            {Math.round(sessionTonnage).toLocaleString("ru-RU")} кг
-          </strong>
+          {w.is_cardio === 1 ? (
+            <>
+              Сумма ккал:{" "}
+              <strong className="vol">
+                {Math.round(cardioCaloriesSum).toLocaleString("ru-RU")}
+              </strong>
+            </>
+          ) : (
+            <>
+              Тоннаж:{" "}
+              <strong className="vol">
+                {Math.round(sessionTonnage).toLocaleString("ru-RU")} кг
+              </strong>
+            </>
+          )}
         </span>
       </div>
 
@@ -750,6 +1425,11 @@ function WorkoutSummaryScreen({
             <span>Вес тела: {w.body_weight_kg} кг</span>
           )}
         </div>
+        {surveyLine && (
+          <p className="muted" style={{ fontSize: "0.88rem", margin: "0.35rem 0 0" }}>
+            {surveyLine}
+          </p>
+        )}
         {w.notes?.trim() && (
           <p style={{ fontSize: "0.88rem", margin: "0.35rem 0 0", whiteSpace: "pre-wrap" }}>
             {w.notes}
@@ -758,7 +1438,40 @@ function WorkoutSummaryScreen({
       </div>
 
       <div className="w-summary-list">
-        {blocks.length === 0 ? (
+        {w.is_cardio === 1 ? (
+          cardioRows.length === 0 ? (
+            <p className="muted">Нет кардио-записей — нажми «Редактировать».</p>
+          ) : (
+            cardioRows.map((cr) => {
+              const bits: string[] = [];
+              if (cr.distance_km != null)
+                bits.push(`${String(cr.distance_km).replace(".", ",")} км`);
+              if (cr.duration_sec != null)
+                bits.push(formatDurationSec(cr.duration_sec));
+              if (cr.speed_kmh != null)
+                bits.push(`${String(cr.speed_kmh).replace(".", ",")} км/ч`);
+              if (cr.pulse_bpm != null) bits.push(`пульс ${cr.pulse_bpm}`);
+              if (cr.calories != null)
+                bits.push(`${String(cr.calories).replace(".", ",")} ккал`);
+              return (
+                <div key={cr.id} className="w-summary-row">
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "baseline" }}>
+                    <strong>{cr.exercise_name}</strong>
+                    <span className="wbadge">Кардио</span>
+                  </div>
+                  <div className="muted" style={{ fontSize: "0.86rem", marginTop: "0.2rem" }}>
+                    {bits.length ? bits.join(" · ") : "—"}
+                  </div>
+                  {cr.notes?.trim() && (
+                    <div className="muted" style={{ fontSize: "0.82rem", marginTop: "0.15rem" }}>
+                      {cr.notes}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )
+        ) : blocks.length === 0 ? (
           <p className="muted">Нет упражнений — нажми «Редактировать».</p>
         ) : (
           blocks.map((b) => {
@@ -820,15 +1533,18 @@ function WorkoutSummaryScreen({
 function AddExercisePanel({
   workoutId,
   onAdded,
+  newExerciseOpen,
+  onCloseNewExercise,
 }: {
   workoutId: number;
   onAdded: () => Promise<void>;
+  newExerciseOpen: boolean;
+  onCloseNewExercise: () => void;
 }) {
   const db = useDb();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ExerciseRow[]>([]);
   const [nkr, setNkr] = useState(false);
-  const [modal, setModal] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -858,11 +1574,32 @@ function AddExercisePanel({
   return (
     <div className="panel">
       <h2>Добавить упражнение</h2>
-      <div className="toolbar">
-        <button type="button" className="primary" onClick={() => setModal(true)}>
-          Новое упражнение
-        </button>
+      <div className="field">
+        <label htmlFor="add-ex-q">Поиск по каталогу</label>
+        <input
+          id="add-ex-q"
+          type="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Начни вводить название…"
+        />
       </div>
+      <label
+        style={{
+          display: "flex",
+          gap: "0.4rem",
+          alignItems: "center",
+          marginBottom: "0.5rem",
+          fontSize: "0.9rem",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={nkr}
+          onChange={(e) => setNkr(e.target.checked)}
+        />
+        НКР при добавлении (тоннаж ×2)
+      </label>
       {hits.length > 0 && (
         <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0 0" }}>
           {hits.map((h) => (
@@ -880,12 +1617,12 @@ function AddExercisePanel({
           ))}
         </ul>
       )}
-      {modal && (
+      {newExerciseOpen && (
         <CreateExerciseModal
-          onClose={() => setModal(false)}
+          onClose={onCloseNewExercise}
           onCreated={async (exerciseId) => {
             await addWorkoutExercise(db, workoutId, exerciseId, nkr);
-            setModal(false);
+            onCloseNewExercise();
             setQ("");
             setHits([]);
             await onAdded();
@@ -1053,6 +1790,228 @@ function CreateExerciseModal({
   );
 }
 
+function EditExerciseMetadataModal({
+  exerciseId,
+  exerciseName,
+  onClose,
+  onSaved,
+}: {
+  exerciseId: number;
+  exerciseName: string;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const db = useDb();
+  const [editName, setEditName] = useState("");
+  const [parts, setParts] = useState<BodyPartRow[]>([]);
+  const [sel, setSel] = useState<Record<number, boolean>>({});
+  const [muscleTags, setMuscleTags] = useState<string[]>([]);
+  const [muscleInput, setMuscleInput] = useState("");
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoading(true);
+      try {
+        const [list, bpIds, tags, suggestions, currentName] = await Promise.all([
+          listBodyParts(db),
+          listExerciseBodyPartIds(db, exerciseId),
+          listExerciseMuscleTagStrings(db, exerciseId),
+          listAllMuscleTags(db),
+          getExerciseName(db, exerciseId),
+        ]);
+        if (cancelled) return;
+        setParts(list);
+        setEditName((currentName ?? exerciseName).trim());
+        const sel0: Record<number, boolean> = {};
+        for (const bid of bpIds) sel0[bid] = true;
+        setSel(sel0);
+        setMuscleTags(tags);
+        setTagSuggestions(suggestions.map((t) => t.tag));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [db, exerciseId, exerciseName]);
+
+  function addMuscleTag(): void {
+    const t = muscleInput.trim();
+    if (!t) return;
+    setMuscleTags((prev) =>
+      prev.some((x) => x.toLowerCase() === t.toLowerCase()) ? prev : [...prev, t],
+    );
+    setMuscleInput("");
+  }
+
+  async function submit(): Promise<void> {
+    setErr(null);
+    const ids = Object.entries(sel)
+      .filter(([, v]) => v)
+      .map(([k]) => Number(k));
+    if (!editName.trim()) {
+      setErr("Введите название");
+      return;
+    }
+    if (ids.length === 0) {
+      setErr("Выберите хотя бы одну группу мышц");
+      return;
+    }
+    try {
+      await updateExerciseName(db, exerciseId, editName);
+      await replaceExerciseMetadata(db, exerciseId, ids, muscleTags);
+      await onSaved();
+      onClose();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("UNIQUE") || msg.includes("2067")) {
+        setErr(
+          "Упражнение с таким названием уже есть в каталоге. Задайте другое имя.",
+        );
+      } else {
+        setErr(msg);
+      }
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal" role="dialog" aria-modal="true">
+        <h2>Упражнение в каталоге</h2>
+        <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
+          Название, группы и теги мышц — для всех тренировок, где выбрано это упражнение.
+        </p>
+        {loading ? (
+          <p className="muted">Загрузка…</p>
+        ) : (
+          <>
+            <div className="field">
+              <label htmlFor="edit-ex-name">Название</label>
+              <input
+                id="edit-ex-name"
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Как в блокноте"
+              />
+            </div>
+            <p className="muted" style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}>
+              Снимите лишние группы или добавьте новые; теги мышц можно полностью заменить.
+            </p>
+            <div className="bp-grid">
+              {parts.map((p) => (
+                <label key={p.id} className="bp-item">
+                  <input
+                    type="checkbox"
+                    checked={!!sel[p.id]}
+                    onChange={(e) =>
+                      setSel((s) => ({ ...s, [p.id]: e.target.checked }))
+                    }
+                  />
+                  {p.name}
+                </label>
+              ))}
+            </div>
+            <div className="field" style={{ marginTop: "0.65rem" }}>
+              <label htmlFor="edit-mtag">Рабочие мышцы (уточнение)</label>
+              <div
+                style={{
+                  display: "flex",
+                  gap: "0.35rem",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <input
+                  id="edit-mtag"
+                  type="text"
+                  list="edit-muscle-datalist"
+                  value={muscleInput}
+                  onChange={(e) => setMuscleInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addMuscleTag();
+                    }
+                  }}
+                  placeholder="Трицепс, бицепс…"
+                />
+                <datalist id="edit-muscle-datalist">
+                  {tagSuggestions.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+                <button type="button" onClick={addMuscleTag}>
+                  Добавить
+                </button>
+              </div>
+              {muscleTags.length > 0 && (
+                <div
+                  style={{
+                    marginTop: "0.35rem",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "0.35rem",
+                    alignItems: "center",
+                  }}
+                >
+                  {muscleTags.map((t) => (
+                    <span
+                      key={t}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "0.2rem",
+                      }}
+                    >
+                      <span className="wbadge wbadge-muscle">{t}</span>
+                      <button
+                        type="button"
+                        className="ghost"
+                        style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
+                        onClick={() =>
+                          setMuscleTags((prev) => prev.filter((x) => x !== t))
+                        }
+                        aria-label={`Удалить ${t}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            {err && (
+              <p className="error" style={{ marginTop: "0.35rem" }}>
+                {err}
+              </p>
+            )}
+            <div className="toolbar" style={{ marginTop: "0.75rem" }}>
+              <button type="button" onClick={onClose}>
+                Отмена
+              </button>
+              <button type="button" className="primary" onClick={() => void submit()}>
+                Сохранить
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ExerciseBlockEditor({
   block,
   sets,
@@ -1065,6 +2024,7 @@ function ExerciseBlockEditor({
   onOpenExercise: () => void;
 }) {
   const db = useDb();
+  const [editMeta, setEditMeta] = useState(false);
   const nkr = block.nkr === 1;
   const blockVol = sumVolumes(sets, nkr);
 
@@ -1091,10 +2051,21 @@ function ExerciseBlockEditor({
         <button type="button" className="ghost" onClick={onOpenExercise}>
           История
         </button>
+        <button type="button" className="ghost" onClick={() => setEditMeta(true)}>
+          Группы и мышцы
+        </button>
         <button type="button" className="danger" onClick={() => void removeBlock()}>
           Удалить блок
         </button>
       </div>
+      {editMeta && (
+        <EditExerciseMetadataModal
+          exerciseId={block.exercise_id}
+          exerciseName={block.exercise_name}
+          onClose={() => setEditMeta(false)}
+          onSaved={onReload}
+        />
+      )}
       {(block.body_groups || block.muscle_tags) && (
         <div style={{ margin: "0.2rem 0 0.35rem" }}>
           {block.body_groups
@@ -1666,6 +2637,7 @@ function AnalyticsScreen({
   const [muscleOptions, setMuscleOptions] = useState<{ tag: string }[]>([]);
   const [muscleStats, setMuscleStats] = useState<ExerciseStatRow[]>([]);
   const [weights, setWeights] = useState<BodyWeightSeriesPoint[]>([]);
+  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -1676,6 +2648,10 @@ function AnalyticsScreen({
 
   useEffect(() => {
     void listWorkoutsBodyWeightSeries(db).then(setWeights);
+  }, [db]);
+
+  useEffect(() => {
+    void listWorkouts(db).then(setWorkouts);
   }, [db]);
 
   useEffect(() => {
@@ -1707,6 +2683,23 @@ function AnalyticsScreen({
       })),
     [weights],
   );
+
+  /** Сумма тоннажа за календарный день (несколько тренировок в один день складываются). */
+  const tonnageChartData = useMemo(() => {
+    const byDay = new Map<string, number>();
+    for (const w of workouts) {
+      const add = w.tonnage_kg ?? 0;
+      byDay.set(w.workout_date, (byDay.get(w.workout_date) ?? 0) + add);
+    }
+    return [...byDay.entries()]
+      .map(([iso, tonnage]) => ({
+        iso,
+        label: formatRuDate(iso),
+        tonnage,
+      }))
+      .filter((d) => d.tonnage > 0)
+      .sort((a, b) => a.iso.localeCompare(b.iso));
+  }, [workouts]);
 
   return (
     <section>
@@ -1741,6 +2734,52 @@ function AnalyticsScreen({
                   dataKey="kg"
                   name="кг"
                   stroke="#8ab4f8"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Тоннаж по датам</h2>
+        <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
+          Суммарный тоннаж силовых тренировок по календарным дням (если в день было несколько сессий — складываются). Кардио-сессии дают 0 кг и на графике не показываются.
+        </p>
+        {tonnageChartData.length === 0 ? (
+          <p className="muted" style={{ marginTop: "0.5rem" }}>
+            Пока нет дней с ненулевым тоннажом — добавь подходы в силовых тренировках.
+          </p>
+        ) : (
+          <div style={{ width: "100%", height: 280, marginTop: "0.75rem" }}>
+            <ResponsiveContainer>
+              <LineChart data={tonnageChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                <XAxis dataKey="label" tick={{ fill: "#9aa0a6", fontSize: 10 }} />
+                <YAxis
+                  tick={{ fill: "#9aa0a6" }}
+                  domain={["auto", "auto"]}
+                  width={52}
+                  tickFormatter={(v) =>
+                    typeof v === "number"
+                      ? Math.round(v).toLocaleString("ru-RU")
+                      : String(v)
+                  }
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#1a1e24",
+                    border: "1px solid #2a2f36",
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="tonnage"
+                  name="Тоннаж, кг"
+                  stroke="#ffb74d"
                   strokeWidth={2}
                   dot={{ r: 3 }}
                   connectNulls
