@@ -33,6 +33,7 @@ import {
   exerciseHistory,
   exerciseMaxWorkingWeightByDate,
   exerciseStatsByBodyPart,
+  exerciseStatsByBodyPartAndMuscleTag,
   exerciseBodyPartSetMatches,
   getExerciseIdByExactName,
   getExerciseName,
@@ -44,16 +45,19 @@ import {
   listMeasurementSeries,
   listMeasurementTypes,
   listAllMuscleTags,
+  listMuscleTagsForBodyPart,
   listSetsForWorkout,
   listWorkoutCardioRows,
   listWorkoutExercises,
   listWorkouts,
   listWorkoutsBodyWeightSeries,
   mergeExerciseMetadata,
+  mergeExercisesIntoTarget,
   relinkAllWorkoutExercisesToExercise,
   relinkWorkoutExercise,
   replaceExerciseMetadata,
   searchExercises,
+  searchExercisesWithBodyAndMuscle,
   updateSet,
   updateExerciseName,
   updateWorkout,
@@ -1754,6 +1758,7 @@ function CreateExerciseModal({
   onCreated: (exerciseId: number) => Promise<void>;
 }) {
   const db = useDb();
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [name, setName] = useState("");
   const [parts, setParts] = useState<BodyPartRow[]>([]);
   const [sel, setSel] = useState<Record<number, boolean>>({});
@@ -1761,6 +1766,7 @@ function CreateExerciseModal({
   const [muscleInput, setMuscleInput] = useState("");
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [hits, setHits] = useState<ExerciseRow[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -1770,6 +1776,37 @@ function CreateExerciseModal({
       setTagSuggestions(tags.map((t) => t.tag));
     })();
   }, [db]);
+
+  const selectedBodyPartIds = useMemo(
+    () =>
+      Object.entries(sel)
+        .filter(([, v]) => v)
+        .map(([k]) => Number(k)),
+    [sel],
+  );
+
+  useEffect(() => {
+    if (step !== 3) {
+      setHits([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        const list = await searchExercisesWithBodyAndMuscle(
+          db,
+          name,
+          selectedBodyPartIds,
+          muscleTags,
+        );
+        if (!cancelled) setHits(list);
+      })();
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [db, step, name, selectedBodyPartIds, muscleTags]);
 
   function addMuscleTag(): void {
     const t = muscleInput.trim();
@@ -1782,27 +1819,66 @@ function CreateExerciseModal({
     setMuscleInput("");
   }
 
-  async function submit() {
+  function goNext(): void {
     setErr(null);
-    const ids = Object.entries(sel)
-      .filter(([, v]) => v)
-      .map(([k]) => Number(k));
+    if (step === 1) {
+      if (selectedBodyPartIds.length === 0) {
+        setErr("Выберите хотя бы одну группу тела");
+        return;
+      }
+      setStep(2);
+      return;
+    }
+    if (step === 2) {
+      setStep(3);
+    }
+  }
+
+  function goBack(): void {
+    setErr(null);
+    if (step === 2) setStep(1);
+    else if (step === 3) setStep(2);
+  }
+
+  async function pickFromCatalog(exerciseId: number): Promise<void> {
+    setErr(null);
+    try {
+      await mergeExerciseMetadata(
+        db,
+        exerciseId,
+        selectedBodyPartIds,
+        muscleTags,
+      );
+      await onCreated(exerciseId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(msg);
+    }
+  }
+
+  async function submit(): Promise<void> {
+    setErr(null);
     if (!name.trim()) {
       setErr("Введите название");
       return;
     }
-    if (ids.length === 0) {
+    if (selectedBodyPartIds.length === 0) {
       setErr("Выберите хотя бы одну группу мышц");
       return;
     }
     try {
-      const id = await createExerciseOrMergeByName(db, name, ids, muscleTags);
+      const id = await createExerciseOrMergeByName(
+        db,
+        name,
+        selectedBodyPartIds,
+        muscleTags,
+      );
       await onCreated(id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("UNIQUE") || msg.includes("2067")) {
         setErr(
-          "Упражнение с таким названием уже есть. Выберите его из подсказок поиска или измените название.",
+          "Упражнение с таким названием уже есть. Выберите его из подсказок ниже или измените название.",
         );
       } else {
         setErr(msg);
@@ -1820,105 +1896,151 @@ function CreateExerciseModal({
     >
       <div className="modal" role="dialog" aria-modal="true">
         <h2>Новое упражнение</h2>
-        <div className="field">
-          <label htmlFor="exn">Название</label>
-          <input
-            id="exn"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Как в блокноте"
-          />
-        </div>
-        <p
-          className="muted"
-          style={{ fontSize: "0.85rem", margin: "0.35rem 0" }}
-        >
-          Группы — для фильтра «по части тела». Мышцы — уточнение (например
-          трицепс) для второго фильтра в аналитике.
+        <p className="muted" style={{ fontSize: "0.85rem", margin: "0 0 0.5rem" }}>
+          Шаг {step} из 3:{" "}
+          {step === 1
+            ? "часть тела (зоны в каталоге)"
+            : step === 2
+              ? "уточнение мышц (для фильтра в аналитике)"
+              : "название и подсказки из каталога"}
         </p>
-        <div className="bp-grid">
-          {parts.map((p) => (
-            <label key={p.id} className="bp-item">
-              <input
-                type="checkbox"
-                checked={!!sel[p.id]}
-                onChange={(e) =>
-                  setSel((s) => ({ ...s, [p.id]: e.target.checked }))
-                }
-              />
-              {p.name}
-            </label>
-          ))}
-        </div>
-        <div className="field" style={{ marginTop: "0.65rem" }}>
-          <label htmlFor="mtag">Рабочие мышцы (уточнение)</label>
-          <div
-            style={{
-              display: "flex",
-              gap: "0.35rem",
-              flexWrap: "wrap",
-              alignItems: "center",
-            }}
-          >
-            <input
-              id="mtag"
-              type="text"
-              list="muscle-tag-datalist"
-              value={muscleInput}
-              onChange={(e) => setMuscleInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addMuscleTag();
-                }
-              }}
-              placeholder="Трицепс, широчайшая…"
-            />
-            <datalist id="muscle-tag-datalist">
-              {tagSuggestions.map((t) => (
-                <option key={t} value={t} />
+
+        {step === 1 && (
+          <>
+            <div className="bp-grid">
+              {parts.map((p) => (
+                <label key={p.id} className="bp-item">
+                  <input
+                    type="checkbox"
+                    checked={!!sel[p.id]}
+                    onChange={(e) =>
+                      setSel((s) => ({ ...s, [p.id]: e.target.checked }))
+                    }
+                  />
+                  {p.name}
+                </label>
               ))}
-            </datalist>
-            <button type="button" onClick={addMuscleTag}>
-              Добавить
-            </button>
-          </div>
-          {muscleTags.length > 0 && (
+            </div>
+          </>
+        )}
+
+        {step === 2 && (
+          <div className="field" style={{ marginTop: "0.35rem" }}>
+            <label htmlFor="mtag">Рабочие мышцы (уточнение)</label>
             <div
               style={{
-                marginTop: "0.35rem",
                 display: "flex",
-                flexWrap: "wrap",
                 gap: "0.35rem",
+                flexWrap: "wrap",
                 alignItems: "center",
               }}
             >
-              {muscleTags.map((t) => (
-                <span
-                  key={t}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "0.2rem",
-                  }}
-                >
-                  <span className="wbadge wbadge-muscle">{t}</span>
-                  <button
-                    type="button"
-                    className="ghost"
-                    style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
-                    onClick={() =>
-                      setMuscleTags((prev) => prev.filter((x) => x !== t))
-                    }
-                    aria-label={`Удалить ${t}`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
+              <input
+                id="mtag"
+                type="text"
+                list="muscle-tag-datalist"
+                value={muscleInput}
+                onChange={(e) => setMuscleInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addMuscleTag();
+                  }
+                }}
+                placeholder="Трицепс, широчайшая…"
+              />
+              <datalist id="muscle-tag-datalist">
+                {tagSuggestions.map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+              <button type="button" onClick={addMuscleTag}>
+                Добавить
+              </button>
             </div>
-          )}
-        </div>
+            {muscleTags.length > 0 && (
+              <div
+                style={{
+                  marginTop: "0.35rem",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "0.35rem",
+                  alignItems: "center",
+                }}
+              >
+                {muscleTags.map((t) => (
+                  <span
+                    key={t}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.2rem",
+                    }}
+                  >
+                    <span className="wbadge wbadge-muscle">{t}</span>
+                    <button
+                      type="button"
+                      className="ghost"
+                      style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
+                      onClick={() =>
+                        setMuscleTags((prev) => prev.filter((x) => x !== t))
+                      }
+                      aria-label={`Удалить ${t}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.5rem" }}>
+              Можно пропустить и перейти к названию — теги потом можно добавить в
+              карточке упражнения.
+            </p>
+          </div>
+        )}
+
+        {step === 3 && (
+          <>
+            <div className="field">
+              <label htmlFor="exn">Название</label>
+              <input
+                id="exn"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Как в блокноте"
+              />
+            </div>
+            {hits.length > 0 && (
+              <div style={{ marginTop: "0.5rem" }}>
+                <p className="muted" style={{ fontSize: "0.82rem", margin: "0 0 0.35rem" }}>
+                  Похожие в каталоге (с теми же группами и тегами) — нажми, чтобы
+                  не плодить дубликат:
+                </p>
+                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {hits.map((h) => (
+                    <li key={h.id} style={{ marginBottom: "0.25rem" }}>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void pickFromCatalog(h.id)}
+                      >
+                        {h.name}
+                        {h.body_groups && (
+                          <span className="muted" style={{ fontSize: "0.82rem" }}>
+                            {" "}
+                            ({h.body_groups})
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+
         {err && (
           <p className="error" style={{ marginTop: "0.35rem" }}>
             {err}
@@ -1928,13 +2050,25 @@ function CreateExerciseModal({
           <button type="button" onClick={onClose}>
             Отмена
           </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void submit()}
-          >
-            Создать
-          </button>
+          {step > 1 && (
+            <button type="button" onClick={goBack}>
+              Назад
+            </button>
+          )}
+          {step < 3 && (
+            <button type="button" className="primary" onClick={goNext}>
+              Далее
+            </button>
+          )}
+          {step === 3 && (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void submit()}
+            >
+              Создать
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -3232,6 +3366,10 @@ function AnalyticsScreen({
   const db = useDb();
   const [parts, setParts] = useState<BodyPartRow[]>([]);
   const [bpId, setBpId] = useState<number | "">("");
+  const [muscleTagFilter, setMuscleTagFilter] = useState("");
+  const [muscleTagOptions, setMuscleTagOptions] = useState<{ tag: string }[]>(
+    [],
+  );
   const [stats, setStats] = useState<ExerciseStatRow[]>([]);
   const [chartExerciseId, setChartExerciseId] = useState<number | "">("");
   const [maxWeightSeries, setMaxWeightSeries] = useState<
@@ -3239,6 +3377,7 @@ function AnalyticsScreen({
   >([]);
   const [weights, setWeights] = useState<BodyWeightSeriesPoint[]>([]);
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
+  const [dragOverId, setDragOverId] = useState<number | null>(null);
 
   useEffect(() => {
     void listBodyParts(db).then(setParts);
@@ -3254,13 +3393,33 @@ function AnalyticsScreen({
 
   useEffect(() => {
     if (bpId === "") {
+      setMuscleTagOptions([]);
+      return;
+    }
+    void listMuscleTagsForBodyPart(db, bpId).then(setMuscleTagOptions);
+  }, [db, bpId]);
+
+  useEffect(() => {
+    setMuscleTagFilter("");
+  }, [bpId]);
+
+  useEffect(() => {
+    if (bpId === "") {
       setStats([]);
       return;
     }
     void (async () => {
-      setStats(await exerciseStatsByBodyPart(db, bpId));
+      const list =
+        muscleTagFilter.trim() === ""
+          ? await exerciseStatsByBodyPart(db, bpId)
+          : await exerciseStatsByBodyPartAndMuscleTag(
+              db,
+              bpId,
+              muscleTagFilter,
+            );
+      setStats(list);
     })();
-  }, [db, bpId]);
+  }, [db, bpId, muscleTagFilter]);
 
   useEffect(() => {
     if (bpId === "") {
@@ -3427,7 +3586,8 @@ function AnalyticsScreen({
           максимальный вес среди рабочих подходов (без разминки). В день с
           несколькими тренировками берётся один общий максимум на календарную
           дату. В таблице ниже: один клик по строке — подставить упражнение в
-          график; двойной клик — открыть историю подходов.
+          график; двойной клик — история подходов. Перетащи строку на другую,
+          чтобы объединить дубликаты (все сессии перейдут на целевое упражнение).
         </p>
         <div className="field" style={{ maxWidth: 320 }}>
           <label htmlFor="bp">Группа</label>
@@ -3448,6 +3608,36 @@ function AnalyticsScreen({
             ))}
           </select>
         </div>
+        {bpId !== "" && (
+          <div className="field" style={{ maxWidth: 360, marginTop: "0.65rem" }}>
+            <label htmlFor="bp-muscle">Тег мышцы</label>
+            <select
+              id="bp-muscle"
+              value={muscleTagFilter}
+              disabled={muscleTagOptions.length === 0}
+              onChange={(e) => {
+                setMuscleTagFilter(e.target.value);
+                setChartExerciseId("");
+              }}
+            >
+              <option value="">Все</option>
+              {muscleTagOptions.map((o) => (
+                <option key={o.tag} value={o.tag}>
+                  {o.tag}
+                </option>
+              ))}
+            </select>
+            {muscleTagOptions.length === 0 && (
+              <p
+                className="muted"
+                style={{ fontSize: "0.82rem", marginTop: "0.35rem" }}
+              >
+                Нет тегов у упражнений этой группы в тренировках — добавь теги в
+                карточке упражнения, чтобы фильтровать список.
+              </p>
+            )}
+          </div>
+        )}
         <div className="field" style={{ maxWidth: 420, marginTop: "0.65rem" }}>
           <label htmlFor="chart-ex">Упражнение для графика</label>
           <select
@@ -3534,19 +3724,89 @@ function AnalyticsScreen({
                   <tr
                     key={s.id}
                     className="clickable"
-                    title="Один клик — на график, двойной клик — история"
-                    style={
-                      chartExerciseId === s.id
+                    draggable
+                    title="Один клик — на график, двойной клик — история; перетащи строку на другую — объединить"
+                    style={{
+                      ...(chartExerciseId === s.id
                         ? {
                             background: "rgba(129, 201, 149, 0.1)",
-                            boxShadow: "inset 0 0 0 1px rgba(129, 201, 149, 0.35)",
+                            boxShadow:
+                              "inset 0 0 0 1px rgba(129, 201, 149, 0.35)",
                           }
-                        : undefined
-                    }
+                        : {}),
+                      ...(dragOverId === s.id
+                        ? {
+                            outline: "2px dashed #8ab4f8",
+                            outlineOffset: -2,
+                          }
+                        : {}),
+                    }}
                     onClick={() => setChartExerciseId(s.id)}
                     onDoubleClick={(e) => {
                       e.preventDefault();
                       onOpenExercise(s.id);
+                    }}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(
+                        "application/x-jym-exercise-id",
+                        String(s.id),
+                      );
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragEnd={() => setDragOverId(null)}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setDragOverId(s.id);
+                    }}
+                    onDragLeave={() => {
+                      setDragOverId((cur) => (cur === s.id ? null : cur));
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverId(null);
+                      const raw = e.dataTransfer.getData(
+                        "application/x-jym-exercise-id",
+                      );
+                      const sourceId = Number(raw);
+                      if (!Number.isFinite(sourceId) || sourceId === s.id) {
+                        return;
+                      }
+                      const srcName = stats.find((x) => x.id === sourceId)?.name;
+                      const tgtName = s.name;
+                      if (
+                        !window.confirm(
+                          `Объединить «${srcName ?? sourceId}» в «${tgtName}»? Все тренировки останутся у «${tgtName}»; вторая карточка удалится из каталога.`,
+                        )
+                      ) {
+                        return;
+                      }
+                      if (bpId === "") return;
+                      const bodyPartId = bpId;
+                      void (async () => {
+                        try {
+                          await mergeExercisesIntoTarget(db, sourceId, s.id);
+                          if (chartExerciseId === sourceId) {
+                            setChartExerciseId(s.id);
+                          }
+                          const list =
+                            muscleTagFilter.trim() === ""
+                              ? await exerciseStatsByBodyPart(db, bodyPartId)
+                              : await exerciseStatsByBodyPartAndMuscleTag(
+                                  db,
+                                  bodyPartId,
+                                  muscleTagFilter,
+                                );
+                          setStats(list);
+                          void listMuscleTagsForBodyPart(db, bodyPartId).then(
+                            setMuscleTagOptions,
+                          );
+                        } catch (err) {
+                          window.alert(
+                            err instanceof Error ? err.message : String(err),
+                          );
+                        }
+                      })();
                     }}
                   >
                     <td>{s.name}</td>

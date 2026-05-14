@@ -310,6 +310,62 @@ export async function searchExercises(
   );
 }
 
+/** Поиск по каталогу с фильтром: упражнение должно иметь все выбранные группы тела и все указанные теги мышц. */
+export async function searchExercisesWithBodyAndMuscle(
+  db: Database,
+  q: string,
+  bodyPartIds: number[],
+  muscleTags: string[],
+): Promise<ExerciseRow[]> {
+  const hits = await searchExercises(db, q);
+  if (hits.length === 0) return [];
+  if (bodyPartIds.length === 0 && muscleTags.length === 0) return hits;
+  const ids = hits.map((h) => h.id);
+  const ph = ids.map((_, i) => `$${i + 1}`).join(", ");
+  const bpRows = await db.select<
+    { exercise_id: number; body_part_id: number }[]
+  >(
+    `SELECT exercise_id, body_part_id FROM exercise_body_parts WHERE exercise_id IN (${ph})`,
+    ids,
+  );
+  const tagRows = await db.select<{ exercise_id: number; tag: string }[]>(
+    `SELECT exercise_id, tag FROM exercise_muscle_tags WHERE exercise_id IN (${ph})`,
+    ids,
+  );
+  const bpByEx = new Map<number, number[]>();
+  for (const r of bpRows) {
+    const cur = bpByEx.get(r.exercise_id) ?? [];
+    cur.push(r.body_part_id);
+    bpByEx.set(r.exercise_id, cur);
+  }
+  const tagsByEx = new Map<number, string[]>();
+  for (const r of tagRows) {
+    const cur = tagsByEx.get(r.exercise_id) ?? [];
+    cur.push(r.tag);
+    tagsByEx.set(r.exercise_id, cur);
+  }
+  const muscleLower = muscleTags
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  function matches(exId: number): boolean {
+    const bp = bpByEx.get(exId) ?? [];
+    const tags = tagsByEx.get(exId) ?? [];
+    const tagLows = tags.map((t) => t.toLowerCase());
+    if (bodyPartIds.length > 0) {
+      for (const id of bodyPartIds) {
+        if (!bp.includes(id)) return false;
+      }
+    }
+    if (muscleLower.length > 0) {
+      for (const m of muscleLower) {
+        if (!tagLows.some((x) => x === m)) return false;
+      }
+    }
+    return true;
+  }
+  return hits.filter((h) => matches(h.id));
+}
+
 /** Добавляет группы и теги мышц; уже существующие связи не трогает (INSERT OR IGNORE). */
 export async function mergeExerciseMetadata(
   db: Database,
@@ -535,6 +591,27 @@ export async function relinkAllWorkoutExercisesToExercise(
   );
 }
 
+/**
+ * Объединить две карточки каталога: все блоки тренировок с source переходят на target,
+ * группы тела и теги мышц объединяются, запись source удаляется.
+ */
+export async function mergeExercisesIntoTarget(
+  db: Database,
+  sourceExerciseId: number,
+  targetExerciseId: number,
+): Promise<void> {
+  if (sourceExerciseId === targetExerciseId) return;
+  const srcBp = await listExerciseBodyPartIds(db, sourceExerciseId);
+  const tgtBp = await listExerciseBodyPartIds(db, targetExerciseId);
+  const srcTags = await listExerciseMuscleTagStrings(db, sourceExerciseId);
+  const tgtTags = await listExerciseMuscleTagStrings(db, targetExerciseId);
+  const unionBp = [...new Set([...srcBp, ...tgtBp])];
+  const unionTags = [...new Set([...srcTags, ...tgtTags])];
+  await relinkAllWorkoutExercisesToExercise(db, sourceExerciseId, targetExerciseId);
+  await replaceExerciseMetadata(db, targetExerciseId, unionBp, unionTags);
+  await db.execute("DELETE FROM exercises WHERE id = $1", [sourceExerciseId]);
+}
+
 export async function deleteWorkoutExercise(
   db: Database,
   weId: number,
@@ -623,6 +700,29 @@ export async function exerciseStatsByBodyPart(
   );
 }
 
+/** Как exerciseStatsByBodyPart, но только упражнения с заданным тегом мышц (для фильтра в аналитике). */
+export async function exerciseStatsByBodyPartAndMuscleTag(
+  db: Database,
+  bodyPartId: number,
+  muscleTag: string,
+): Promise<ExerciseStatRow[]> {
+  const tag = muscleTag.trim();
+  if (!tag) return exerciseStatsByBodyPart(db, bodyPartId);
+  return db.select(
+    `SELECT e.id, e.name,
+            COUNT(DISTINCT we.workout_id) AS session_count,
+            MAX(w.workout_date) AS last_date
+     FROM exercises e
+     JOIN exercise_body_parts ebp ON ebp.exercise_id = e.id AND ebp.body_part_id = $1
+     JOIN exercise_muscle_tags emt ON emt.exercise_id = e.id AND emt.tag = $2
+     JOIN workout_exercises we ON we.exercise_id = e.id
+     JOIN workouts w ON w.id = we.workout_id
+     GROUP BY e.id, e.name
+     ORDER BY last_date DESC, e.name`,
+    [bodyPartId, tag],
+  );
+}
+
 /**
  * По каждому календарному дню — максимальный вес среди рабочих подходов (без разминки).
  * Упражнение должно быть с меткой группы bodyPartId в каталоге (как в фильтре аналитики).
@@ -668,6 +768,22 @@ export async function listAllMuscleTags(
 ): Promise<{ tag: string }[]> {
   return db.select(
     `SELECT DISTINCT tag AS tag FROM exercise_muscle_tags ORDER BY tag COLLATE NOCASE`,
+  );
+}
+
+/** Теги мышц, которые встречаются у упражнений с данной группой тела и есть в тренировках. */
+export async function listMuscleTagsForBodyPart(
+  db: Database,
+  bodyPartId: number,
+): Promise<{ tag: string }[]> {
+  return db.select(
+    `SELECT DISTINCT emt.tag AS tag
+     FROM exercise_muscle_tags emt
+     JOIN exercise_body_parts ebp ON ebp.exercise_id = emt.exercise_id AND ebp.body_part_id = $1
+     JOIN workout_exercises we ON we.exercise_id = emt.exercise_id
+     JOIN workouts w ON w.id = we.workout_id
+     ORDER BY tag COLLATE NOCASE`,
+    [bodyPartId],
   );
 }
 
