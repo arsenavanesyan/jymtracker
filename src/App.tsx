@@ -3358,20 +3358,60 @@ function MeasurementsScreen() {
   );
 }
 
+const ANALYTICS_BODY_WEIGHTS_STORAGE_KEY =
+  "jymtracker.analytics.bodyWeightsPanel.v1";
+
+type AnalyticsBodyWeightsPrefs = {
+  bodyPartId: number | null;
+  muscleTag: string;
+  chartExerciseId: number | null;
+};
+
+function loadAnalyticsBodyWeightsPrefs(): AnalyticsBodyWeightsPrefs {
+  try {
+    const raw = localStorage.getItem(ANALYTICS_BODY_WEIGHTS_STORAGE_KEY);
+    if (!raw) {
+      return { bodyPartId: null, muscleTag: "", chartExerciseId: null };
+    }
+    const j = JSON.parse(raw) as Partial<AnalyticsBodyWeightsPrefs>;
+    return {
+      bodyPartId: typeof j.bodyPartId === "number" ? j.bodyPartId : null,
+      muscleTag: typeof j.muscleTag === "string" ? j.muscleTag : "",
+      chartExerciseId:
+        typeof j.chartExerciseId === "number" ? j.chartExerciseId : null,
+    };
+  } catch {
+    return { bodyPartId: null, muscleTag: "", chartExerciseId: null };
+  }
+}
+
+function saveAnalyticsBodyWeightsPrefs(p: AnalyticsBodyWeightsPrefs): void {
+  try {
+    localStorage.setItem(ANALYTICS_BODY_WEIGHTS_STORAGE_KEY, JSON.stringify(p));
+  } catch {
+    /* квота / приватный режим */
+  }
+}
+
 function AnalyticsScreen({
   onOpenExercise,
 }: {
   onOpenExercise: (id: number) => void;
 }) {
   const db = useDb();
+  const apInit = useMemo(() => loadAnalyticsBodyWeightsPrefs(), []);
   const [parts, setParts] = useState<BodyPartRow[]>([]);
-  const [bpId, setBpId] = useState<number | "">("");
-  const [muscleTagFilter, setMuscleTagFilter] = useState("");
+  const [bpId, setBpId] = useState<number | "">(
+    apInit.bodyPartId == null ? "" : apInit.bodyPartId,
+  );
+  const [muscleTagFilter, setMuscleTagFilter] = useState(apInit.muscleTag);
   const [muscleTagOptions, setMuscleTagOptions] = useState<{ tag: string }[]>(
     [],
   );
   const [stats, setStats] = useState<ExerciseStatRow[]>([]);
-  const [chartExerciseId, setChartExerciseId] = useState<number | "">("");
+  const [chartExerciseId, setChartExerciseId] = useState<number | "">(
+    apInit.chartExerciseId == null ? "" : apInit.chartExerciseId,
+  );
   const [maxWeightSeries, setMaxWeightSeries] = useState<
     ExerciseMaxWeightDayRow[]
   >([]);
@@ -3396,12 +3436,28 @@ function AnalyticsScreen({
       setMuscleTagOptions([]);
       return;
     }
-    void listMuscleTagsForBodyPart(db, bpId).then(setMuscleTagOptions);
+    let cancelled = false;
+    void listMuscleTagsForBodyPart(db, bpId).then((opts) => {
+      if (cancelled) return;
+      setMuscleTagOptions(opts);
+      setMuscleTagFilter((cur) => {
+        if (!cur) return cur;
+        if (opts.length === 0) return "";
+        return opts.some((o) => o.tag === cur) ? cur : "";
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [db, bpId]);
 
   useEffect(() => {
-    setMuscleTagFilter("");
-  }, [bpId]);
+    saveAnalyticsBodyWeightsPrefs({
+      bodyPartId: bpId === "" ? null : bpId,
+      muscleTag: muscleTagFilter,
+      chartExerciseId: chartExerciseId === "" ? null : chartExerciseId,
+    });
+  }, [bpId, muscleTagFilter, chartExerciseId]);
 
   useEffect(() => {
     if (bpId === "") {
@@ -3597,6 +3653,7 @@ function AnalyticsScreen({
             onChange={(e) => {
               const v = e.target.value === "" ? "" : Number(e.target.value);
               setBpId(v);
+              setMuscleTagFilter("");
               setChartExerciseId("");
             }}
           >
@@ -3856,17 +3913,20 @@ function ExerciseHistoryScreen({
   const db = useDb();
   const [name, setName] = useState<string | null>(null);
   const [rows, setRows] = useState<ExerciseHistoryRow[]>([]);
+  const [editCatalogOpen, setEditCatalogOpen] = useState(false);
+
+  const reloadHistory = useCallback(async () => {
+    const [n, h] = await Promise.all([
+      getExerciseName(db, id),
+      exerciseHistory(db, id),
+    ]);
+    setName(n);
+    setRows(h);
+  }, [db, id]);
 
   useEffect(() => {
-    void (async () => {
-      const [n, h] = await Promise.all([
-        getExerciseName(db, id),
-        exerciseHistory(db, id),
-      ]);
-      setName(n);
-      setRows(h);
-    })();
-  }, [db, id]);
+    void reloadHistory();
+  }, [reloadHistory]);
 
   const groups = useMemo(() => groupHistory(rows), [rows]);
 
@@ -3878,7 +3938,26 @@ function ExerciseHistoryScreen({
         </button>
       </div>
       <div className="panel">
-        <h2>{name ?? "Упражнение"}</h2>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "0.5rem",
+            justifyContent: "space-between",
+          }}
+        >
+          <h2 style={{ margin: 0, flex: "1 1 12rem" }}>
+            {name ?? "Упражнение"}
+          </h2>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setEditCatalogOpen(true)}
+          >
+            Изменить
+          </button>
+        </div>
         <p className="muted" style={{ fontSize: "0.88rem", marginTop: 0 }}>
           Подходы по датам. НКР: тоннаж строки с множителем ×2.
         </p>
@@ -3924,6 +4003,14 @@ function ExerciseHistoryScreen({
           })
         )}
       </div>
+      {editCatalogOpen && (
+        <EditExerciseMetadataModal
+          exerciseId={id}
+          exerciseName={name ?? ""}
+          onClose={() => setEditCatalogOpen(false)}
+          onSaved={reloadHistory}
+        />
+      )}
     </section>
   );
 }
