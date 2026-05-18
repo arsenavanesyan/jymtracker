@@ -5,6 +5,8 @@ import {
 import type {
   BodyPartRow,
   BodyWeightSeriesPoint,
+  CatalogExerciseRow,
+  ExerciseEquipmentKindRow,
   ExerciseHistoryRow,
   ExerciseMaxWeightDayRow,
   ExerciseRow,
@@ -249,6 +251,35 @@ export async function listBodyParts(db: Database): Promise<BodyPartRow[]> {
   );
 }
 
+export async function listExerciseEquipmentKinds(
+  db: Database,
+): Promise<ExerciseEquipmentKindRow[]> {
+  return db.select(
+    "SELECT id, name, sort_order FROM exercise_equipment_kinds ORDER BY sort_order, id",
+  );
+}
+
+/** Упражнения каталога с заданным типом снаряда (группы и теги уже в БД). */
+export async function listCatalogExercisesByKind(
+  db: Database,
+  equipmentKindId: number,
+): Promise<CatalogExerciseRow[]> {
+  return db.select(
+    `SELECT e.id, e.name, e.equipment_kind_id, e.catalog_technique, e.catalog_muscles_hint,
+            (SELECT GROUP_CONCAT(bp.name, ' · ')
+             FROM exercise_body_parts ebp
+             JOIN body_parts bp ON bp.id = ebp.body_part_id
+             WHERE ebp.exercise_id = e.id) AS body_groups,
+            (SELECT GROUP_CONCAT(emt.tag, ' · ')
+             FROM exercise_muscle_tags emt
+             WHERE emt.exercise_id = e.id) AS muscle_tags_line
+     FROM exercises e
+     WHERE e.equipment_kind_id = $1
+     ORDER BY e.name COLLATE NOCASE`,
+    [equipmentKindId],
+  );
+}
+
 export async function searchExercises(
   db: Database,
   q: string,
@@ -398,12 +429,22 @@ export async function createExercise(
   name: string,
   bodyPartIds: number[],
   muscleTags: string[] = [],
+  catalogMeta?: {
+    equipment_kind_id?: number | null;
+    catalog_technique?: string | null;
+    catalog_muscles_hint?: string | null;
+  },
 ): Promise<number> {
   const trimmed = name.trim();
   if (!trimmed) throw new Error("Пустое название");
-  const r = await db.execute("INSERT INTO exercises (name) VALUES ($1)", [
-    trimmed,
-  ]);
+  const eq = catalogMeta?.equipment_kind_id ?? null;
+  const tech = catalogMeta?.catalog_technique?.trim() || null;
+  const mus = catalogMeta?.catalog_muscles_hint?.trim() || null;
+  const r = await db.execute(
+    `INSERT INTO exercises (name, equipment_kind_id, catalog_technique, catalog_muscles_hint)
+     VALUES ($1, $2, $3, $4)`,
+    [trimmed, eq, tech, mus],
+  );
   const id = r.lastInsertId;
   if (id == null) throw new Error("lastInsertId missing");
   await mergeExerciseMetadata(db, id, bodyPartIds, muscleTags);
@@ -944,6 +985,17 @@ export async function listMeasurementSeries(
      WHERE type_id = $1
      ORDER BY measured_date ASC`,
     [typeId],
+  );
+}
+
+/** Все замеры для таблицы «тип × дата». */
+export async function listAllBodyMeasurements(
+  db: Database,
+): Promise<{ type_id: number; measured_date: string; value_cm: number }[]> {
+  return db.select(
+    `SELECT type_id, measured_date, value_cm
+     FROM body_measurements
+     ORDER BY measured_date ASC, type_id ASC`,
   );
 }
 

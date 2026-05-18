@@ -1,7 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
 
 export const FULL_BACKUP_FORMAT = "jymtracker-backup" as const;
-export const FULL_BACKUP_VERSION = 2 as const;
+export const FULL_BACKUP_VERSION = 3 as const;
 
 export type FullBackupWorkoutRow = {
   id: number;
@@ -47,10 +47,18 @@ export type FullBackupPayload = {
       label_ru: string;
       sort_order: number;
     }[];
+    exercise_equipment_kinds: {
+      id: number;
+      name: string;
+      sort_order: number;
+    }[];
     exercises: {
       id: number;
       name: string;
       created_at: string;
+      equipment_kind_id: number | null;
+      catalog_technique: string | null;
+      catalog_muscles_hint: string | null;
     }[];
     exercise_body_parts: {
       exercise_id: number;
@@ -101,6 +109,7 @@ const DELETE_ORDER = [
   "exercise_muscle_tags",
   "exercise_body_parts",
   "exercises",
+  "exercise_equipment_kinds",
   "body_measurements",
   "body_measurement_types",
   "body_parts",
@@ -108,6 +117,7 @@ const DELETE_ORDER = [
 
 const SEQUENCE_TABLES = [
   "body_parts",
+  "exercise_equipment_kinds",
   "exercises",
   "workouts",
   "workout_exercises",
@@ -173,6 +183,26 @@ function normalizeCardioRow(raw: Record<string, unknown>): FullBackupCardioRow {
   };
 }
 
+function normalizeExerciseBackupRow(
+  raw: Record<string, unknown>,
+): FullBackupPayload["tables"]["exercises"][number] {
+  return {
+    id: Number(raw.id),
+    name: String(raw.name ?? ""),
+    created_at: String(raw.created_at ?? ""),
+    equipment_kind_id:
+      raw.equipment_kind_id === null || raw.equipment_kind_id === undefined
+        ? null
+        : Number(raw.equipment_kind_id),
+    catalog_technique:
+      raw.catalog_technique != null ? String(raw.catalog_technique) : null,
+    catalog_muscles_hint:
+      raw.catalog_muscles_hint != null
+        ? String(raw.catalog_muscles_hint)
+        : null,
+  };
+}
+
 export function parseFullBackupJson(text: string): unknown {
   return JSON.parse(text) as unknown;
 }
@@ -183,9 +213,9 @@ export function validateFullBackup(data: unknown): FullBackupPayload {
     throw new Error("Неизвестный формат файла (ожидался jymtracker-backup).");
   }
   const ver = Number(data.version);
-  if (ver !== 1 && ver !== 2) {
+  if (ver !== 1 && ver !== 2 && ver !== 3) {
     throw new Error(
-      `Версия бэкапа ${String(data.version)} не поддерживается (нужна 1 или 2).`,
+      `Версия бэкапа ${String(data.version)} не поддерживается (нужна 1, 2 или 3).`,
     );
   }
   if (data.app !== "jymtracker") {
@@ -217,6 +247,15 @@ export function validateFullBackup(data: unknown): FullBackupPayload {
         )
       : [];
 
+  const exercise_equipment_kinds =
+    ver >= 3 && Array.isArray(t.exercise_equipment_kinds)
+      ? (t.exercise_equipment_kinds as FullBackupPayload["tables"]["exercise_equipment_kinds"])
+      : [];
+
+  const exercises = (t.exercises as unknown[]).map((row) =>
+    normalizeExerciseBackupRow(row as Record<string, unknown>),
+  );
+
   return {
     format: FULL_BACKUP_FORMAT,
     version: FULL_BACKUP_VERSION,
@@ -225,7 +264,8 @@ export function validateFullBackup(data: unknown): FullBackupPayload {
     tables: {
       body_parts: t.body_parts as FullBackupPayload["tables"]["body_parts"],
       body_measurement_types: t.body_measurement_types as FullBackupPayload["tables"]["body_measurement_types"],
-      exercises: t.exercises as FullBackupPayload["tables"]["exercises"],
+      exercise_equipment_kinds,
+      exercises,
       exercise_body_parts: t.exercise_body_parts as FullBackupPayload["tables"]["exercise_body_parts"],
       exercise_muscle_tags: t.exercise_muscle_tags as FullBackupPayload["tables"]["exercise_muscle_tags"],
       workouts,
@@ -246,6 +286,7 @@ export async function exportFullBackup(db: Database): Promise<FullBackupPayload>
   const [
     body_parts,
     body_measurement_types,
+    exercise_equipment_kinds,
     exercises,
     exercise_body_parts,
     exercise_muscle_tags,
@@ -261,8 +302,12 @@ export async function exportFullBackup(db: Database): Promise<FullBackupPayload>
     db.select<FullBackupPayload["tables"]["body_measurement_types"]>(
       "SELECT id, code, label_ru, sort_order FROM body_measurement_types ORDER BY id",
     ),
+    db.select<FullBackupPayload["tables"]["exercise_equipment_kinds"]>(
+      "SELECT id, name, sort_order FROM exercise_equipment_kinds ORDER BY id",
+    ),
     db.select<FullBackupPayload["tables"]["exercises"]>(
-      "SELECT id, name, created_at FROM exercises ORDER BY id",
+      `SELECT id, name, created_at, equipment_kind_id, catalog_technique, catalog_muscles_hint
+       FROM exercises ORDER BY id`,
     ),
     db.select<FullBackupPayload["tables"]["exercise_body_parts"]>(
       "SELECT exercise_id, body_part_id FROM exercise_body_parts ORDER BY exercise_id, body_part_id",
@@ -299,6 +344,7 @@ export async function exportFullBackup(db: Database): Promise<FullBackupPayload>
     tables: {
       body_parts,
       body_measurement_types,
+      exercise_equipment_kinds,
       exercises,
       exercise_body_parts,
       exercise_muscle_tags,
@@ -347,10 +393,24 @@ export async function importFullBackup(
         [r.id, r.code, r.label_ru, r.sort_order],
       );
     }
+    for (const r of payload.tables.exercise_equipment_kinds) {
+      await db.execute(
+        "INSERT INTO exercise_equipment_kinds (id, name, sort_order) VALUES ($1, $2, $3)",
+        [r.id, r.name, r.sort_order],
+      );
+    }
     for (const r of payload.tables.exercises) {
       await db.execute(
-        "INSERT INTO exercises (id, name, created_at) VALUES ($1, $2, $3)",
-        [r.id, r.name, r.created_at],
+        `INSERT INTO exercises (id, name, created_at, equipment_kind_id, catalog_technique, catalog_muscles_hint)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          r.id,
+          r.name,
+          r.created_at,
+          r.equipment_kind_id ?? null,
+          r.catalog_technique ?? null,
+          r.catalog_muscles_hint ?? null,
+        ],
       );
     }
     for (const r of payload.tables.exercise_body_parts) {

@@ -23,7 +23,6 @@ import {
   addWorkoutExercise,
   clearWorkoutCardioRows,
   clearWorkoutStrengthBlocks,
-  createExerciseOrMergeByName,
   createWorkout,
   deleteSet,
   deleteWorkout,
@@ -41,6 +40,7 @@ import {
   listBodyParts,
   listExerciseBodyPartIds,
   listExerciseMuscleTagStrings,
+  listAllBodyMeasurements,
   listBodyMeasurementsForDate,
   listMeasurementSeries,
   listMeasurementTypes,
@@ -57,7 +57,6 @@ import {
   relinkWorkoutExercise,
   replaceExerciseMetadata,
   searchExercises,
-  searchExercisesWithBodyAndMuscle,
   updateSet,
   updateExerciseName,
   updateWorkout,
@@ -72,6 +71,7 @@ import {
   parseFullBackupJson,
   validateFullBackup,
 } from "./fullBackup";
+import { CreateExerciseModal } from "./exerciseCatalogModals";
 import {
   applyBodyMeasurementsImport,
   parseBodyMeasurementsPaste,
@@ -903,12 +903,13 @@ function BackupDataModal({ onClose }: { onClose: () => void }) {
       >
         <h2 id="backup-title">Резервная копия</h2>
         <p className="muted" style={{ fontSize: "0.9rem", marginTop: 0 }}>
-          Полный дамп базы в JSON (версия 2): части тела, упражнения, связи
-          групп и тегов мышц, все тренировки (даты, вес тела, опрос «как прошло
-          / интенсивность / энергия», кардио-флаг, заметки), кардио-строки
-          (дистанция, время, скорость, пульс, ккал), силовые блоки (НКР),
-          подходы (вес, повторы, разминка), замеры тела. Поддерживается импорт
-          старых файлов версии 1.
+          Полный дамп базы в JSON (версия 3): части тела, типы снаряда каталога,
+          упражнения (в т.ч. техника и подсказки по мышцам), связи групп и тегов
+          мышц, все тренировки (даты, вес тела, опрос «как прошло / интенсивность /
+          энергия», кардио-флаг, заметки), кардио-строки (дистанция, время,
+          скорость, пульс, ккал), силовые блоки (НКР), подходы (вес, повторы,
+          разминка), замеры тела. Поддерживается импорт старых файлов версий 1 и
+          2.
         </p>
         <input
           ref={fileRef}
@@ -1750,331 +1751,6 @@ function AddExercisePanel({
   );
 }
 
-function CreateExerciseModal({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: (exerciseId: number) => Promise<void>;
-}) {
-  const db = useDb();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [name, setName] = useState("");
-  const [parts, setParts] = useState<BodyPartRow[]>([]);
-  const [sel, setSel] = useState<Record<number, boolean>>({});
-  const [muscleTags, setMuscleTags] = useState<string[]>([]);
-  const [muscleInput, setMuscleInput] = useState("");
-  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [hits, setHits] = useState<ExerciseRow[]>([]);
-
-  useEffect(() => {
-    void (async () => {
-      const list = await listBodyParts(db);
-      setParts(list);
-      const tags = await listAllMuscleTags(db);
-      setTagSuggestions(tags.map((t) => t.tag));
-    })();
-  }, [db]);
-
-  const selectedBodyPartIds = useMemo(
-    () =>
-      Object.entries(sel)
-        .filter(([, v]) => v)
-        .map(([k]) => Number(k)),
-    [sel],
-  );
-
-  useEffect(() => {
-    if (step !== 3) {
-      setHits([]);
-      return;
-    }
-    let cancelled = false;
-    const t = setTimeout(() => {
-      void (async () => {
-        const list = await searchExercisesWithBodyAndMuscle(
-          db,
-          name,
-          selectedBodyPartIds,
-          muscleTags,
-        );
-        if (!cancelled) setHits(list);
-      })();
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [db, step, name, selectedBodyPartIds, muscleTags]);
-
-  function addMuscleTag(): void {
-    const t = muscleInput.trim();
-    if (!t) return;
-    setMuscleTags((prev) =>
-      prev.some((x) => x.toLowerCase() === t.toLowerCase())
-        ? prev
-        : [...prev, t],
-    );
-    setMuscleInput("");
-  }
-
-  function goNext(): void {
-    setErr(null);
-    if (step === 1) {
-      if (selectedBodyPartIds.length === 0) {
-        setErr("Выберите хотя бы одну группу тела");
-        return;
-      }
-      setStep(2);
-      return;
-    }
-    if (step === 2) {
-      setStep(3);
-    }
-  }
-
-  function goBack(): void {
-    setErr(null);
-    if (step === 2) setStep(1);
-    else if (step === 3) setStep(2);
-  }
-
-  async function pickFromCatalog(exerciseId: number): Promise<void> {
-    setErr(null);
-    try {
-      await mergeExerciseMetadata(
-        db,
-        exerciseId,
-        selectedBodyPartIds,
-        muscleTags,
-      );
-      await onCreated(exerciseId);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErr(msg);
-    }
-  }
-
-  async function submit(): Promise<void> {
-    setErr(null);
-    if (!name.trim()) {
-      setErr("Введите название");
-      return;
-    }
-    if (selectedBodyPartIds.length === 0) {
-      setErr("Выберите хотя бы одну группу мышц");
-      return;
-    }
-    try {
-      const id = await createExerciseOrMergeByName(
-        db,
-        name,
-        selectedBodyPartIds,
-        muscleTags,
-      );
-      await onCreated(id);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("UNIQUE") || msg.includes("2067")) {
-        setErr(
-          "Упражнение с таким названием уже есть. Выберите его из подсказок ниже или измените название.",
-        );
-      } else {
-        setErr(msg);
-      }
-    }
-  }
-
-  return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="modal" role="dialog" aria-modal="true">
-        <h2>Новое упражнение</h2>
-        <p className="muted" style={{ fontSize: "0.85rem", margin: "0 0 0.5rem" }}>
-          Шаг {step} из 3:{" "}
-          {step === 1
-            ? "часть тела (зоны в каталоге)"
-            : step === 2
-              ? "уточнение мышц (для фильтра в аналитике)"
-              : "название и подсказки из каталога"}
-        </p>
-
-        {step === 1 && (
-          <>
-            <div className="bp-grid">
-              {parts.map((p) => (
-                <label key={p.id} className="bp-item">
-                  <input
-                    type="checkbox"
-                    checked={!!sel[p.id]}
-                    onChange={(e) =>
-                      setSel((s) => ({ ...s, [p.id]: e.target.checked }))
-                    }
-                  />
-                  {p.name}
-                </label>
-              ))}
-            </div>
-          </>
-        )}
-
-        {step === 2 && (
-          <div className="field" style={{ marginTop: "0.35rem" }}>
-            <label htmlFor="mtag">Рабочие мышцы (уточнение)</label>
-            <div
-              style={{
-                display: "flex",
-                gap: "0.35rem",
-                flexWrap: "wrap",
-                alignItems: "center",
-              }}
-            >
-              <input
-                id="mtag"
-                type="text"
-                list="muscle-tag-datalist"
-                value={muscleInput}
-                onChange={(e) => setMuscleInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addMuscleTag();
-                  }
-                }}
-                placeholder="Трицепс, широчайшая…"
-              />
-              <datalist id="muscle-tag-datalist">
-                {tagSuggestions.map((t) => (
-                  <option key={t} value={t} />
-                ))}
-              </datalist>
-              <button type="button" onClick={addMuscleTag}>
-                Добавить
-              </button>
-            </div>
-            {muscleTags.length > 0 && (
-              <div
-                style={{
-                  marginTop: "0.35rem",
-                  display: "flex",
-                  flexWrap: "wrap",
-                  gap: "0.35rem",
-                  alignItems: "center",
-                }}
-              >
-                {muscleTags.map((t) => (
-                  <span
-                    key={t}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "0.2rem",
-                    }}
-                  >
-                    <span className="wbadge wbadge-muscle">{t}</span>
-                    <button
-                      type="button"
-                      className="ghost"
-                      style={{ padding: "0.1rem 0.35rem", fontSize: "0.75rem" }}
-                      onClick={() =>
-                        setMuscleTags((prev) => prev.filter((x) => x !== t))
-                      }
-                      aria-label={`Удалить ${t}`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.5rem" }}>
-              Можно пропустить и перейти к названию — теги потом можно добавить в
-              карточке упражнения.
-            </p>
-          </div>
-        )}
-
-        {step === 3 && (
-          <>
-            <div className="field">
-              <label htmlFor="exn">Название</label>
-              <input
-                id="exn"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Как в блокноте"
-              />
-            </div>
-            {hits.length > 0 && (
-              <div style={{ marginTop: "0.5rem" }}>
-                <p className="muted" style={{ fontSize: "0.82rem", margin: "0 0 0.35rem" }}>
-                  Похожие в каталоге (с теми же группами и тегами) — нажми, чтобы
-                  не плодить дубликат:
-                </p>
-                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                  {hits.map((h) => (
-                    <li key={h.id} style={{ marginBottom: "0.25rem" }}>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => void pickFromCatalog(h.id)}
-                      >
-                        {h.name}
-                        {h.body_groups && (
-                          <span className="muted" style={{ fontSize: "0.82rem" }}>
-                            {" "}
-                            ({h.body_groups})
-                          </span>
-                        )}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </>
-        )}
-
-        {err && (
-          <p className="error" style={{ marginTop: "0.35rem" }}>
-            {err}
-          </p>
-        )}
-        <div className="toolbar" style={{ marginTop: "0.75rem" }}>
-          <button type="button" onClick={onClose}>
-            Отмена
-          </button>
-          {step > 1 && (
-            <button type="button" onClick={goBack}>
-              Назад
-            </button>
-          )}
-          {step < 3 && (
-            <button type="button" className="primary" onClick={goNext}>
-              Далее
-            </button>
-          )}
-          {step === 3 && (
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void submit()}
-            >
-              Создать
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function EditExerciseMetadataModal({
   exerciseId,
   exerciseName,
@@ -2875,6 +2551,19 @@ const CHART_COLORS = [
   "#4dd0e1",
 ];
 
+function formatMeasurementCm(v: number): string {
+  if (Math.abs(v - Math.round(v)) < 1e-6) return String(Math.round(v));
+  return v.toFixed(1).replace(/\.0$/, "");
+}
+
+/** Разница последнего и предпоследнего замера по типу, например «-4 см». */
+function formatMeasurementDelta(prev: number, last: number): string {
+  const d = last - prev;
+  if (Math.abs(d) < 1e-6) return "0 см";
+  const sign = d > 0 ? "+" : "";
+  return `${sign}${formatMeasurementCm(d)} см`;
+}
+
 function MeasurementsScreen() {
   const db = useDb();
   const [types, setTypes] = useState<MeasurementTypeRow[]>([]);
@@ -2891,6 +2580,9 @@ function MeasurementsScreen() {
     Record<number, MeasurementSeriesPoint[]>
   >({});
   const [savingManual, setSavingManual] = useState(false);
+  const [matrixRows, setMatrixRows] = useState<
+    { type_id: number; measured_date: string; value_cm: number }[]
+  >([]);
 
   const [importModalOpen, setImportModalOpen] = useState(false);
   const defaultChartAppliedRef = useRef(false);
@@ -2976,6 +2668,14 @@ function MeasurementsScreen() {
     );
   }
 
+  const loadMatrix = useCallback(async () => {
+    setMatrixRows(await listAllBodyMeasurements(db));
+  }, [db]);
+
+  useEffect(() => {
+    void loadMatrix();
+  }, [loadMatrix]);
+
   const refreshChartSeries = useCallback(async () => {
     if (chartTypes.length === 0) return;
     const next: Record<number, MeasurementSeriesPoint[]> = {};
@@ -2984,6 +2684,44 @@ function MeasurementsScreen() {
     }
     setSeriesMap(next);
   }, [db, chartTypes]);
+
+  const refreshMeasurementData = useCallback(async () => {
+    await loadMatrix();
+    await refreshChartSeries();
+  }, [loadMatrix, refreshChartSeries]);
+
+  const measurementTable = useMemo(() => {
+    const datesSet = new Set<string>();
+    const valueByKey = new Map<string, number>();
+    for (const r of matrixRows) {
+      datesSet.add(r.measured_date);
+      valueByKey.set(`${r.type_id}|${r.measured_date}`, r.value_cm);
+    }
+    const dates = [...datesSet].sort();
+    const deltaByTypeId = new Map<
+      number,
+      { text: string; sign: -1 | 0 | 1 | null }
+    >();
+    for (const t of types) {
+      const points: { date: string; value: number }[] = [];
+      for (const d of dates) {
+        const v = valueByKey.get(`${t.id}|${d}`);
+        if (v != null) points.push({ date: d, value: v });
+      }
+      if (points.length < 2) {
+        deltaByTypeId.set(t.id, { text: "—", sign: null });
+      } else {
+        const last = points[points.length - 1]!;
+        const prev = points[points.length - 2]!;
+        const diff = last.value - prev.value;
+        deltaByTypeId.set(t.id, {
+          text: formatMeasurementDelta(prev.value, last.value),
+          sign: diff > 1e-6 ? 1 : diff < -1e-6 ? -1 : 0,
+        });
+      }
+    }
+    return { dates, valueByKey, deltaByTypeId };
+  }, [matrixRows, types]);
 
   async function persistManualFieldOnBlur(
     typeId: number,
@@ -2999,7 +2737,7 @@ function MeasurementsScreen() {
     try {
       await upsertBodyMeasurement(db, manualDate, typeId, v, null);
       setPasteReport(`${labelRu}: записано в базу`);
-      await refreshChartSeries();
+      await refreshMeasurementData();
     } catch (e) {
       setPasteReport(
         `${labelRu}: ошибка записи — ${e instanceof Error ? e.message : String(e)}`,
@@ -3026,7 +2764,7 @@ function MeasurementsScreen() {
       }
       setPasteReport(`Сохранено в базу полей: ${n}`);
       await loadManualFieldsFromDb();
-      await refreshChartSeries();
+      await refreshMeasurementData();
     } catch (e) {
       setPasteReport(
         `Ошибка записи в базу: ${e instanceof Error ? e.message : String(e)}`,
@@ -3048,7 +2786,7 @@ function MeasurementsScreen() {
       await deleteBodyMeasurementsForDate(db, manualDate);
       setPasteReport(`Удалены все замеры за ${formatRuDate(manualDate)}`);
       await loadManualFieldsFromDb();
-      await refreshChartSeries();
+      await refreshMeasurementData();
     } catch (e) {
       setPasteReport(
         `Ошибка удаления: ${e instanceof Error ? e.message : String(e)}`,
@@ -3076,7 +2814,7 @@ function MeasurementsScreen() {
       );
       setPaste("");
       setImportModalOpen(false);
-      await refreshChartSeries();
+      await refreshMeasurementData();
       if (parsed.dateISO === manualDate) {
         await loadManualFieldsFromDb();
       }
@@ -3089,6 +2827,73 @@ function MeasurementsScreen() {
 
   return (
     <section>
+      <div className="panel">
+        <h2>Таблица замеров</h2>
+        <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>
+          Строки — зоны тела, столбцы — даты замеров. Справа: на сколько изменилось
+          значение по сравнению с предыдущей датой, где есть оба замера (например
+          шея была 48, стала 44 → «-4 см»).
+        </p>
+        {measurementTable.dates.length === 0 ? (
+          <p className="muted" style={{ marginTop: "0.65rem" }}>
+            Пока нет замеров — введи ниже по дате или импортируй из блокнота.
+          </p>
+        ) : (
+          <div
+            className="table-wrap"
+            style={{ marginTop: "0.75rem", maxWidth: "100%" }}
+          >
+            <table className="measurements-matrix">
+              <thead>
+                <tr>
+                  <th scope="col">Зона</th>
+                  {measurementTable.dates.map((d) => (
+                    <th key={d} scope="col">
+                      {formatRuDate(d)}
+                    </th>
+                  ))}
+                  <th scope="col">Изменение</th>
+                </tr>
+              </thead>
+              <tbody>
+                {types.map((t) => {
+                  const delta = measurementTable.deltaByTypeId.get(t.id) ?? {
+                    text: "—",
+                    sign: null,
+                  };
+                  return (
+                    <tr key={t.id}>
+                      <th scope="row">{t.label_ru}</th>
+                      {measurementTable.dates.map((d) => {
+                        const v = measurementTable.valueByKey.get(
+                          `${t.id}|${d}`,
+                        );
+                        return (
+                          <td key={d}>
+                            {v == null ? "—" : formatMeasurementCm(v)}
+                          </td>
+                        );
+                      })}
+                      <td
+                        className={
+                          delta.sign === -1
+                            ? "meas-delta neg"
+                            : delta.sign === 1
+                              ? "meas-delta pos"
+                              : "meas-delta"
+                        }
+                      >
+                        {delta.text}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <div className="panel">
         <h2>График</h2>
         <p className="muted" style={{ fontSize: "0.86rem", marginTop: 0 }}>

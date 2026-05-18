@@ -27,6 +27,22 @@ export type ExerciseRow = {
   name: string;
   /** Подзапрос в searchExercises */
   body_groups?: string | null;
+  /** Тип снаряда из каталога (миграция 005+) */
+  equipment_kind_id?: number | null;
+  catalog_technique?: string | null;
+  catalog_muscles_hint?: string | null;
+};
+
+/** Строка из exercise_equipment_kinds */
+export type ExerciseEquipmentKindRow = {
+  id: number;
+  name: string;
+  sort_order: number;
+};
+
+/** Упражнение в списке каталога по типу снаряда */
+export type CatalogExerciseRow = ExerciseRow & {
+  muscle_tags_line?: string | null;
 };
 
 export type WorkoutExerciseRow = {
